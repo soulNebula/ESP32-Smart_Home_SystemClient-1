@@ -1,0 +1,51 @@
+# ESP-IDF 构建产物
+build/
+sdkconfig
+sdkconfig.old
+
+# 构建日志（临时排查用，不入库）
+build_log*.txt
+
+# 组件管理器自动下载的东西
+#   ⚠ 本工程【已经有一处在线依赖】了：esp-sr（离线语音识别，见 main/idf_component.yml
+#     与 docs/13-语音模块-ESP-SR.md）。所以下面这两行现在只适用于默认的
+#     「ASRPRO UART」语音方案；一旦打开 CONFIG_APP_VOICE_SOURCE_ESP_SR，
+#     managed_components/ 就是【编译必需品】了。
+#   ⚠ 如果要在完全无网的环境编译 ESP-SR 方案：把 managed_components/ 和
+#     dependencies.lock 一起纳入版本管理（把下面两行注释掉即可），
+#     或者接受"首次编译需要联网拉一次组件"。
+managed_components/
+dependencies.lock
+
+# 调研期间手工下载的 esp-sr 组件包（几 MB~几百 MB 的 zip 与解包内容），
+#   只用于读源码/核对 API 与模型体积，不参与构建，不入库。
+.esp-sr-probe/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+
+# 串口监视器日志（tools/monitor.ps1 产生，临时排查用）
+logs/
+
+# 本工程的本地 ESP-IDF 沙箱（Python 环境 + IDF_TOOLS_PATH，见 tools/idf_pio.ps1）
+#   只服务本工程，不入库：体积大且与本机路径绑定
+.idf-sandbox/
+
+# Android 构建产物与本地配置
+#   local.properties 含本机 SDK 绝对路径，绝对不能入库
+#   注意：android/apk/ 下是刻意留存的成品 APK，【不】忽略
+android/.gradle/
+android/build/
+android/app/build/
+android/captures/
+android/local.properties
+android/.idea/
+android/*.iml

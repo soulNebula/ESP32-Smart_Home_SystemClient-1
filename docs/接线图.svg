@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1160" viewBox="0 0 1600 1160"
+     font-family="Microsoft YaHei, PingFang SC, sans-serif">
+
+  <!-- ================= 样式定义 ================= -->
+  <defs>
+    <style>
+      .t      { font-size: 15px; fill: #212121; }
+      .ts     { font-size: 13px; fill: #424242; }
+      .txs    { font-size: 11.5px; fill: #616161; }
+      .h1     { font-size: 22px; font-weight: bold; fill: #0d47a1; }
+      .h2     { font-size: 17px; font-weight: bold; fill: #0d47a1; }
+      .h3     { font-size: 14px; font-weight: bold; fill: #212121; }
+      .mono   { font-family: Consolas, monospace; font-size: 13px; fill: #1a237e; }
+      .monos  { font-family: Consolas, monospace; font-size: 11.5px; fill: #1a237e; }
+      .box    { fill: #ffffff; stroke: #90a4ae; stroke-width: 1.4; rx: 6; }
+      .box5   { fill: #ffebee; stroke: #d32f2f; stroke-width: 1.8; rx: 6; }
+      .box33  { fill: #fff3e0; stroke: #f57c00; stroke-width: 1.8; rx: 6; }
+      .boxmcu { fill: #e3f2fd; stroke: #1565c0; stroke-width: 2; rx: 8; }
+      .boxpwr { fill: #eceff1; stroke: #37474f; stroke-width: 1.8; rx: 6; }
+      .w5     { stroke: #d32f2f; stroke-width: 2.4; fill: none; }
+      .w33    { stroke: #f57c00; stroke-width: 2.4; fill: none; }
+      .wgnd   { stroke: #424242; stroke-width: 2.4; fill: none; }
+      .wsig   { stroke: #1976d2; stroke-width: 1.8; fill: none; }
+      .wusb   { stroke: #7b1fa2; stroke-width: 2.4; fill: none; }
+      .dash   { stroke-dasharray: 5 4; }
+    </style>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 z" fill="#37474f"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="1160" fill="#fafafa"/>
+
+  <text class="h1" x="24" y="40">ESP32-S3 智能家居 · 电源与 GPIO 接线图</text>
+  <text class="ts"  x="24" y="62">左侧为电源分配，右侧为逐器件接线。所有 GND 必须连在一起（共地）。</text>
+
+  <!-- ==================================================================== -->
+  <!--  第一部分：电源分配                                                   -->
+  <!-- ==================================================================== -->
+  <rect x="20" y="82" width="1560" height="330" fill="#ffffff" stroke="#cfd8dc" stroke-width="1" rx="8"/>
+  <text class="h2" x="40" y="112">① 电源分配</text>
+
+  <!-- 12V 适配器 -->
+  <rect class="boxpwr" x="50" y="132" width="190" height="62"/>
+  <text class="h3" x="66" y="156">12V 电源适配器</text>
+  <text class="txs" x="66" y="176">OUTPUT 12V / ≥2A</text>
+
+  <line class="wgnd" x1="145" y1="194" x2="145" y2="226" marker-end="url(#ar)"/>
+  <text class="txs" x="152" y="214">12V</text>
+
+  <!-- 多路电源模块 -->
+  <rect class="boxpwr" x="50" y="228" width="250" height="96"/>
+  <text class="h3" x="66" y="252">多路电源分配模块</text>
+  <text class="txs" x="66" y="272">输入 6–24V（KF301 / DC005）</text>
+  <text class="txs" x="66" y="290">输出 5V@3A  +  3.3V@1A</text>
+  <text class="txs" x="66" y="310">带总开关 · 每轨 6 路输出</text>
+
+  <!-- 三条轨 -->
+  <line class="w5"   x1="300" y1="176" x2="1530" y2="176"/>
+  <rect x="310" y="158" width="250" height="26" fill="#ffebee" stroke="#d32f2f" rx="4"/>
+  <text class="mono" x="322" y="176">5V 轨 @3A ── 舵机 / 风扇 / 语音</text>
+
+  <line class="w33"  x1="300" y1="256" x2="1530" y2="256"/>
+  <rect x="310" y="238" width="300" height="26" fill="#fff3e0" stroke="#f57c00" rx="4"/>
+  <text class="mono" x="322" y="256">3.3V 轨 @1A ── OLED/AHT20/光敏/雨滴/LED</text>
+
+  <line class="wgnd" x1="300" y1="340" x2="1530" y2="340"/>
+  <rect x="310" y="322" width="330" height="26" fill="#eceff1" stroke="#424242" rx="4"/>
+  <text class="mono" x="322" y="340">GND 轨 ── ★ 必须与 ESP32 的 GND 连在一起</text>
+
+  <line class="w5"  x1="300" y1="276" x2="300" y2="176"/>
+  <line class="w33" x1="300" y1="276" x2="300" y2="256"/>
+  <line class="wgnd" x1="300" y1="324" x2="300" y2="340"/>
+
+  <!-- 电流标注 -->
+  <rect x="700" y="120" width="860" height="238" fill="#f5f5f5" stroke="#e0e0e0" rx="6"/>
+  <text class="h3" x="720" y="146">电流预算（只用单颗 LED，不接 WS2812）</text>
+  <text class="mono" x="720" y="172">5V 轨 (3A 上限)   舵机×3 = 0.45A 典型 / 2.10A 堵转</text>
+  <text class="mono" x="720" y="194">                  风扇   = 0.20A 典型 / 0.50A</text>
+  <text class="mono" x="720" y="216">                  ASRPRO = 0.10A 典型 / 0.50A(喇叭)</text>
+  <text class="mono" x="720" y="240">                  ─────────────────────────────</text>
+  <text class="mono" x="720" y="262">                  实际 ≈ 0.9A    极端 ≈ 3.1A ⚠</text>
+  <text class="mono" x="720" y="292">3.3V 轨 (1A 上限) OLED 20mA + AHT20 1mA + 光敏 5mA</text>
+  <text class="mono" x="720" y="314">                  + 雨滴 5mA + LED×4 80mA  ≈ 0.11A  ✔</text>
+  <text class="txs"  x="720" y="342">⚠ 别让三个舵机同时堵转 + 喇叭最大音量（会到 3.1A，超过模块 3A）</text>
+
+  <!-- USB -->
+  <rect class="boxmcu" x="50" y="352" width="250" height="48"/>
+  <text class="t" x="66" y="374">USB（电脑 / 充电头）→ ESP32 开发板</text>
+  <text class="txs" x="66" y="392">★ 不要同时从模块 5V 反灌开发板</text>
+
+  <!-- ==================================================================== -->
+  <!--  第二部分：ESP32 引脚                                                 -->
+  <!-- ==================================================================== -->
+  <rect x="20" y="430" width="1560" height="330" fill="#ffffff" stroke="#cfd8dc" stroke-width="1" rx="8"/>
+  <text class="h2" x="40" y="460">② ESP32-S3 引脚分配（括号内为外设端引脚）</text>
+
+  <!-- 3.3V / 信号 组 -->
+  <rect class="box33" x="50" y="480" width="740" height="258"/>
+  <text class="h3" x="68" y="506">3.3V 组 —— I2C 总线 + 模拟量 + LED（全部接 3.3V 轨）</text>
+
+  <text class="mono" x="68" y="536">GPIO8   ← OLED.SDA / AHT20.SDA</text>
+  <text class="mono" x="68" y="560">GPIO9   ← OLED.SCL / AHT20.SCL</text>
+  <text class="mono" x="68" y="584">GPIO1   ← 光敏模块.AO      （模拟量，不要接 5V 供电）</text>
+  <text class="mono" x="68" y="608">GPIO2   ← 雨滴模块.AO      （模拟量，不要接 5V 供电）</text>
+  <text class="mono" x="68" y="632">GPIO4   ← LED 客厅 .S</text>
+  <text class="mono" x="68" y="656">GPIO5   ← LED 厨房 .S</text>
+  <text class="mono" x="68" y="680">GPIO6   ← LED 卧室 .S</text>
+  <text class="mono" x="68" y="704">GPIO7   ← LED 浴室 .S</text>
+  <text class="mono" x="68" y="728">GPIO10  ← 按键1（另一脚接 GND，内部上拉）</text>
+
+  <!-- 5V / 执行器 组 -->
+  <rect class="box5" x="810" y="480" width="750" height="258"/>
+  <text class="h3" x="828" y="506">5V 组 —— 执行器（全部接 5V 轨 + 共地）</text>
+
+  <text class="mono" x="828" y="536">GPIO15  → 舵机·窗帘 .橙线（信号）   红→5V  棕→GND</text>
+  <text class="mono" x="828" y="560">GPIO16  → 舵机·窗户 .橙线           红→5V  棕→GND</text>
+  <text class="mono" x="828" y="584">GPIO17  → 舵机·门   .橙线           红→5V  棕→GND</text>
+  <text class="mono" x="828" y="608">GPIO18  → MOS 模块  .信号/栅极      栅极加 10kΩ 下拉到 GND</text>
+  <text class="mono" x="828" y="632">          风扇 红→5V   风扇 黑→MOS 输出−</text>
+  <text class="mono" x="828" y="656">GPIO47  → ASRPRO .RXD   （ESP 发 → 模块收）</text>
+  <text class="mono" x="828" y="680">GPIO21  ← ASRPRO .TXD   （ESP 收 ← 模块发）★ 交叉接</text>
+  <text class="mono" x="828" y="704">ASRPRO .VCC → 5V        ASRPRO .GND → GND</text>
+  <text class="mono" x="828" y="728">GPIO11  ← 按键2（另一脚接 GND）</text>
+
+  <!-- ==================================================================== -->
+  <!--  第三部分：注意事项                                                   -->
+  <!-- ==================================================================== -->
+  <rect x="20" y="778" width="1560" height="356" fill="#ffffff" stroke="#cfd8dc" stroke-width="1" rx="8"/>
+  <text class="h2" x="40" y="808">③ 接线要点与易错点</text>
+
+  <rect x="50" y="826" width="490" height="292" fill="#fff8e1" stroke="#f9a825" rx="6"/>
+  <text class="h3" x="68" y="852">⚠ 最容易接错的 6 个点</text>
+  <text class="ts" x="68" y="880">1. 雨滴 / 光敏模块 VCC 接【3.3V】，不要接 5V</text>
+  <text class="txs" x="84" y="898">   接 5V 后 AO 会超过 ADC 量程(3.1V)、也可能超 IO 耐压(3.6V)</text>
+  <text class="ts" x="68" y="924">2. ASRPRO 的 TXD/RXD 要【交叉接】</text>
+  <text class="txs" x="84" y="942">   TXD→GPIO21，RXD→GPIO47。接成 TX-TX 模块完全没反应且不报错</text>
+  <text class="ts" x="68" y="968">3. 所有 GND 必须连在一起（模块 GND ↔ ESP32 GND）</text>
+  <text class="txs" x="84" y="986">   不共地 → 舵机乱抖、语音收不到数据</text>
+  <text class="ts" x="68" y="1012">4. 舵机的【橙线】是信号，不要接到电源</text>
+  <text class="ts" x="68" y="1038">5. MOS 模块栅极必须加 10kΩ 下拉到 GND</text>
+  <text class="ts" x="68" y="1064">6. LED 模块先看丝印（− / + / S），S 才是信号脚</text>
+  <text class="txs" x="84" y="1082">   接完若"关不掉一直亮"→ 低电平点亮，把 BSP_LED_PLAIN_ACTIVE_LOW 改 1</text>
+  <text class="txs" x="84" y="1106">   重新编译</text>
+
+  <rect x="560" y="826" width="490" height="292" fill="#e8f5e9" stroke="#43a047" rx="6"/>
+  <text class="h3" x="578" y="852">✔ 施工顺序（一步只加一个器件）</text>
+  <text class="mono" x="578" y="880">1. 只插 USB，烧录，看串口日志</text>
+  <text class="mono" x="578" y="904">2. OLED          → I2C scan 出现 0x3C</text>
+  <text class="mono" x="578" y="928">3. AHT20         → 多出 0x38，status 有温湿度</text>
+  <text class="mono" x="578" y="952">4. 光敏 (AO→GPIO1) → 遮光/照光 lux 变化</text>
+  <text class="mono" x="578" y="976">5. 雨滴 (AO→GPIO2) → 滴水 Rain:% 上升</text>
+  <text class="mono" x="578" y="1000">6. LED×4         → on led_living 亮</text>
+  <text class="mono" x="578" y="1024">7. 12V→模块(先不开开关) → 量 5V = 5.0~5.2V</text>
+  <text class="mono" x="578" y="1048">8. 开开关，先接 1 个舵机 → 转且 ESP32 不重启</text>
+  <text class="mono" x="578" y="1072">9. 接齐 3 个舵机     10. MOS + 风扇</text>
+  <text class="mono" x="578" y="1096">11. ASRPRO          12. 全部接齐 → auto on</text>
+
+  <rect x="1070" y="826" width="490" height="292" fill="#e3f2fd" stroke="#1e88e5" rx="6"/>
+  <text class="h3" x="1088" y="852">上电 / 断电顺序</text>
+  <text class="ts" x="1088" y="882">上电：</text>
+  <text class="mono" x="1150" y="882">① 插 USB 给开发板  →  ② 开模块总开关</text>
+  <text class="txs" x="1088" y="902">先给开发板上电，让 GPIO 先进入确定状态</text>
+  <text class="ts" x="1088" y="932">断电：</text>
+  <text class="mono" x="1150" y="932">① 关模块总开关  →  ② 拔 USB</text>
+
+  <text class="h3" x="1088" y="972">联调用的串口命令（115200 8N1）</text>
+  <text class="mono" x="1088" y="998">status            设备 + 传感器 + 网络 + 阈值</text>
+  <text class="mono" x="1088" y="1020">on led_living     开客厅灯</text>
+  <text class="mono" x="1088" y="1042">set door 100 / close door    舵机开关门</text>
+  <text class="mono" x="1088" y="1064">set fan 50        风扇 50%</text>
+  <text class="mono" x="1088" y="1086">say led_kitchen_on   模拟语音（走完整链路）</text>
+  <text class="mono" x="1088" y="1108">auto on / off     自动联动总开关</text>
+
+</svg>

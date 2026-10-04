@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Compose renders the whole UI; the platform theme only needs to be a
+         sane, non-actionbar-holding Material theme. -->
+    <style name="Theme.SmartHomeBLE" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor" tools:targetApi="l">@color/brand_primary</item>
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>
