@@ -1,23 +1,18 @@
-# =============================================================================
-#  run_idf.ps1 -- ASCII-only launcher for tools\idf_pio.ps1
-# =============================================================================
-#  WHY THIS EXISTS
-#  ---------------------------------------------------------------------------
-#  This session's shell is Windows PowerShell 5.1, which decodes a .ps1 file
-#  using the ANSI code page (GBK here) UNLESS the file starts with a UTF-8 BOM.
-#  tools\idf_pio.ps1 contains Chinese text, so if its BOM is ever lost (e.g. a
-#  tool rewrites the file as plain UTF-8) the script fails with
-#  "The string is missing the terminator" / mojibake.
+﻿# 模块：
+#   idf_pio.ps1 的启动壳。命令行直接调它，它转手给 idf_pio.ps1 去干活。
+#   为什么要多这一层：idf_pio.ps1 里有中文，而 PowerShell 5.1 读到
+#   没有 BOM 的 .ps1 会按本机编码（这里是 GBK）解码，中文就乱码、脚本报错。
+#   这个壳在转手之前会先检查并给 idf_pio.ps1 补上 BOM。
+#   用法：
+#       powershell -ExecutionPolicy Bypass -File tools\run_idf.ps1 -Task build
+#       powershell -ExecutionPolicy Bypass -File tools\run_idf.ps1 -Task flash -Port COM31
+#       powershell -ExecutionPolicy Bypass -File tools\run_idf.ps1 -Task erase-flash,flash -Port COM31
+#   多余的参数会原样转给 idf_pio.ps1。
 #
-#  This wrapper is pure ASCII, so it always runs, and it re-adds the BOM to
-#  idf_pio.ps1 before invoking it. Use it instead of calling idf_pio.ps1 direct:
-#
-#      powershell -ExecutionPolicy Bypass -File tools\run_idf.ps1 -Task build
-#      powershell -ExecutionPolicy Bypass -File tools\run_idf.ps1 -Task flash -Port COM31
-#      powershell -ExecutionPolicy Bypass -File tools\run_idf.ps1 -Task erase-flash,flash -Port COM31
-#
-#  Extra args are forwarded verbatim to idf_pio.ps1.
-# =============================================================================
+# 功能：
+#   转手给 IDF 脚本
+#   给中文脚本补 BOM
+
 [CmdletBinding()]
 param(
     [string[]]$Task = @('build'),
@@ -34,7 +29,7 @@ if (-not (Test-Path $target)) {
     exit 1
 }
 
-# --- ensure UTF-8 BOM on the Chinese-containing script -----------------------
+# 功能：缺 BOM 就补上
 $bytes = [System.IO.File]::ReadAllBytes($target)
 $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
 if (-not $hasBom) {
@@ -43,7 +38,7 @@ if (-not $hasBom) {
     Write-Host "[fix]  added UTF-8 BOM to idf_pio.ps1" -ForegroundColor Yellow
 }
 
-# --- forward to the real script ---------------------------------------------
+# 功能：把参数转过去
 $fwd = @{ Task = $Task }
 if ($Port)       { $fwd['Port'] = $Port }
 if ($Reinstall)  { $fwd['Reinstall'] = $true }

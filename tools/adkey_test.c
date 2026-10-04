@@ -1,28 +1,24 @@
-/**
- * @file  adkey_test.c
- * @brief 五位 AD 键盘【判键逻辑】的 PC 端单测（不需要开发板、不需要 ESP-IDF）
+/*
+ * 模块：
+ *   五位键盘的判键单测。在电脑上跑，不用板子也不用 ESP-IDF，
+ *   直接引固件那份阈值表，所以测的就是板上跑的那套判定。
+ *   是 tools/run_adkey_test.ps1 把本文件编出来运行的；
+ *   配套的实机验证是 tools/verify_adkey.ps1。
+ *   编译器打不开带中文的路径，所以脚本先把本文件和 adkey_logic.h 两个文件
+ *   拷到英文目录，编译时再用 -I 指过去，绕开编译器的死活路径。
  *
- * 直接 include 固件用的那份 adkey_logic.h，所以测的就是板上跑的那套阈值。
- * 编译运行见 tools/run_adkey_test.ps1（用 MinGW gcc）。
- *
- * 用例分五类：
- *   1) 本机实测值 —— 四个方向键 + OK(0mV) + 空闲(3128mV) 必须全部命中；
- *   2) 边界与容差 —— 判定线、低压档上沿、容差端点、无效读数；
- *   3) ★ 实机噪声抗扰 —— 2026-09-28 实机抓包里那批"假 OK"电压（2905~3124mV）
- *      必须全部判成"无按键"，否则菜单会自己乱跳；
- *   4) 兼容模式 —— 打开高压残余档后的行为（换模块才用）；
- *   5) 旧逻辑对照 —— 复现"按 OK 无反应"的 bug，证明修复确实解决了它。
- *
- * 阈值来源：components/BSP/ADKEY/adkey_logic.h（固件与单测共用同一份宏）。
+ * 功能：
+ *   试五个键准不准
+ *   试边界和噪声
+ *   试旧逻辑的老毛病
  */
 #include <stdio.h>
 #include <string.h>
 
-/* 编译时由 tools\run_adkey_test.ps1 把 adkey_logic.h 一起拷到 ASCII 暂存目录，
- * 再用 -I 指过去（MinGW gcc 对含中文的路径会抓瞎，所以不能直接编译工程内路径）。*/
+/* 功能：拷到英文目录再编 */
 #include "adkey_logic.h"
 
-/* ── 出厂配置：与 adkey.c 的 s_match_cfg 完全同源（都用 adkey_logic.h 的宏）── */
+/* 功能：出厂的那套阈值 */
 static const adkey_logic_cfg_t CFG = {
     .key_mv         = { ADKEY_KEY1_MV, ADKEY_KEY2_MV, ADKEY_KEY3_MV, ADKEY_KEY4_MV },
     .tolerance      = ADKEY_TOLERANCE_MV,
@@ -32,7 +28,7 @@ static const adkey_logic_cfg_t CFG = {
     .ok_margin      = ADKEY_OK_MARGIN_MV,
 };
 
-/* ── 兼容模式：强制打开高压残余档（换"OK 贴近 VCC"的模块时才这么配）── */
+/* 功能：备用那套，开了会误触 */
 static const adkey_logic_cfg_t CFG_HIGH = {
     .key_mv         = { ADKEY_KEY1_MV, ADKEY_KEY2_MV, ADKEY_KEY3_MV, ADKEY_KEY4_MV },
     .tolerance      = ADKEY_TOLERANCE_MV,
@@ -42,7 +38,7 @@ static const adkey_logic_cfg_t CFG_HIGH = {
     .ok_margin      = ADKEY_OK_MARGIN_MV,
 };
 
-/* 本机实测的空闲基线（开机自校准得到，实机日志里一直是 3128） */
+/* 功能：手没按时量到的值 */
 #define IDLE_MV 3128
 
 static int g_pass = 0;
@@ -60,7 +56,7 @@ static const char *key_name(int r)
     }
 }
 
-/* ---- 旧逻辑（修复前）：只匹配 4 个方向键 + 高压残余档（且无低压档）---- */
+/* 功能：修改前的老判法 */
 static int old_match(int mv, int idle_mv)
 {
     if (mv < 0 || mv >= idle_mv - ADKEY_OK_MARGIN_MV) return ADKEY_LOGIC_NONE;

@@ -1,9 +1,14 @@
-/**
- * @file  key.h
- * @brief 本地按键（KEY1=GPIO10 / KEY2=GPIO11，按下接地）
+/*
+ * 模块：
+ *   按键的对外接口。管板上两个小按钮，被 main.c 和 adkey.c 那边用，
+ *   内部自己起任务反复看电平，认出按下、抬起、单击、长按，
+ *   再通过回调告诉上层去开灯关灯。
  *
- * 内部起一个扫描任务做软件消抖，识别：按下 / 抬起 / 单击 / 长按。
- * 通过回调把事件抛给 App 层，App 再翻译成"开灯/关灯/切换模式"等业务动作。
+ * 功能：
+ *   把按键准备好
+ *   登记按键回调
+ *   查现在按着没有
+ *   回调里别干重活
  */
 #pragma once
 
@@ -15,28 +20,30 @@
 extern "C" {
 #endif
 
+/* 功能：两个按键的编号 */
 typedef enum {
     KEY_ID_1 = 0,
     KEY_ID_2,
     KEY_ID_MAX,
 } key_id_t;
 
+/* 功能：按键会报的事件 */
 typedef enum {
-    KEY_EVENT_DOWN = 0,   /**< 按下（已消抖） */
-    KEY_EVENT_UP,         /**< 抬起 */
-    KEY_EVENT_CLICK,      /**< 单击（抬起且短于长按阈值） */
-    KEY_EVENT_LONG_PRESS, /**< 长按达到 BSP_KEY_LONG_PRESS_MS */
+    KEY_EVENT_DOWN = 0,   /* 功能：按下已消抖 */
+    KEY_EVENT_UP,         /* 功能：松手抬起 */
+    KEY_EVENT_CLICK,      /* 功能：短按算单击 */
+    KEY_EVENT_LONG_PRESS, /* 功能：按久了算长按 */
 } key_event_t;
 
 typedef void (*key_cb_t)(key_id_t id, key_event_t ev, void *user_data);
 
-/** @brief 初始化按键 GPIO 并启动扫描任务（幂等） */
+/* 功能：把按键准备好 */
 esp_err_t key_init(void);
 
-/** @brief 注册回调（只保留最后一个注册者，够用） */
+/* 功能：登记按键回调 */
 esp_err_t key_register_cb(key_cb_t cb, void *user_data);
 
-/** @brief 当前是否处于按下状态 */
+/* 功能：查现在按着没有 */
 bool key_is_pressed(key_id_t id);
 
 #ifdef __cplusplus

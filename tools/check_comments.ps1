@@ -1,38 +1,16 @@
-# =============================================================================
-#  check_comments.ps1 -- static check for C/C++ comment structure (no compile)
-# =============================================================================
-#  WHY THIS SCRIPT EXISTS
-#  ---------------------------------------------------------------------------
-#  While integrating ESP-SR this project hit the SAME class of build failure
-#  three times in a row, and none of them was a logic bug -- the *comment text
-#  itself* was breaking the code structure, and gcc pointed at the wrong line:
+﻿# 模块：
+#   编译前的注释检查工具。专门查"注释写法把代码结构搞坏"的毛病，
+#   本项目因为这三种写法编译失败过三次：注释里出现结束符号、
+#   注释里又嵌一个注释开头、注释某行以反斜杠收尾。
+#   它只读文本，把每个 C、C++ 文件扫一遍并报出行号，编译前先跑它。
+#   参数名不敢叫 Path：叫 Path 时相对路径会绑成空，换成别的名字就没事。
+#   扫描时不在注释里却碰到结束符号，说明前面的注释提前关了，后面的话就成了
+#   代码，报错还报在老远的地方。
 #
-#    1. a block comment line ending with a backslash  -> -Werror=comment
-#    2. a block comment containing the 2-char comment-start token
-#                                                     -> -Werror=comment
-#    3. a block comment containing  "wn*" immediately followed by "/mn*"
-#       -> the star+slash inside was read as the comment END, so the Chinese
-#          text after it became real code:
-#              error: unknown type name 'mn'
-#              error: stray '\343' in program
-#
-#  So run this before building. It is a plain text scanner: it tracks whether
-#  it is inside a block comment / line comment / string literal and reports:
-#    - a comment-start token found INSIDE a block comment (nesting)
-#    - a line ending in backslash INSIDE a block comment
-#    - a block comment still open at end of file
-#
-#  NOTE: this file is intentionally pure ASCII. Windows PowerShell 5.1 decodes
-#  a BOM-less .ps1 using the ANSI code page (GBK here), so a UTF-8 Chinese
-#  script would be mojibake and fail to parse. Keep it ASCII.
-#
-#  USAGE
-#  ---------------------------------------------------------------------------
-#     powershell -ExecutionPolicy Bypass -File tools\check_comments.ps1
-#     powershell -ExecutionPolicy Bypass -File tools\check_comments.ps1 -Path components
-#
-#  Exit code: 0 = clean, 1 = problems found (usable as a pre-build gate).
-# =============================================================================
+# 功能：
+#   扫描源文件
+#   查三类注释毛病
+#   查有没有注释没关
 [CmdletBinding()]
 param(
     [string]$Path = '',
@@ -41,9 +19,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# NOTE: the param is deliberately NOT called $Path -- PowerShell's $PWD/$Path
-# interaction plus relative-argument binding made `-Path components\BSP`
-# resolve to null here (observed). $ScanRoot is unambiguous.
+# 功能：参数名别叫 Path
 $ScanRoot = $Path
 if (-not $ScanRoot) { $ScanRoot = (Get-Item (Split-Path -Parent $PSScriptRoot)).FullName }
 $resolved = Resolve-Path -LiteralPath $ScanRoot -ErrorAction SilentlyContinue
@@ -58,11 +34,11 @@ $LF   = [char]10
 $CR   = [char]13
 $TAB  = [char]9
 $NUL  = [char]0
-$BS   = [char]92   # backslash
-$SLASH = [char]47  # /
-$STAR  = [char]42  # *
-$DQ   = [char]34   # "
-$SQ   = [char]39   # '
+$BS   = [char]92   # 功能：反斜杠
+$SLASH = [char]47  # 功能：斜杠
+$STAR  = [char]42  # 功能：星号
+$DQ   = [char]34   # 功能：双引号
+$SQ   = [char]39   # 功能：单引号
 
 Write-Host ""
 Write-Host "=== C/C++ comment structure check ===" -ForegroundColor Cyan
@@ -109,15 +85,7 @@ foreach ($f in $files) {
         }
 
         if ($c -eq $SLASH -and $n -eq $STAR) { $inBlock = $true; $i += 2; continue }
-        # ------------------------------------------------------------------
-        #  CRITICAL: a comment-END token while NOT inside a comment means some
-        #  earlier block comment was closed too early. This is exactly how the
-        #  "wn*/mn*" bug manifested: the star+slash inside the text closed the
-        #  comment, the rest of the Chinese line became code, and gcc reported
-        #  it far away as "unknown type name" / "stray '\343'".
-        #  Without this branch the scanner silently passed that case, because
-        #  a valid early close leaves no unbalanced state behind.
-        # ------------------------------------------------------------------
+# 功能：查注释结束在哪儿
         if ($c -eq $STAR -and $n -eq $SLASH) {
             $issues.Add(("{0}:{1}  comment-END token OUTSIDE a comment -> a block comment was closed early" -f $f.FullName, $line))
             $i += 2; continue

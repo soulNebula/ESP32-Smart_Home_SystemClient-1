@@ -1,26 +1,25 @@
-//
-// astra_hal_esp32.h
-// ESP32 移植的 astra HAL：u8g2 全缓冲纯软件画布（不发送显示），
-// 刷新经注入的回调交给 main 组件的 OLED 驱动（每页两事务实证模式）。
-//
+/*
+ * 模块：
+ *   界面层在 ESP32 上的硬件实现。用 u8g2 在内存里画好一整屏，再交给
+ *   main 组件的屏幕驱动送出去，被 astra_rocket.cpp 装上。
+ *
+ * 功能：
+ *   内存里画一屏
+ *   按页刷到屏幕
+ *   读按键和发声
+ */
 #pragma once
 #ifndef ASTRA_HAL_ESP32_H_
 #define ASTRA_HAL_ESP32_H_
 
 #include "../hal.h"
 
-/**
- * @brief main 组件注入的桥接回调（ESP-IDF 组件不能反向依赖 main 组件）。
- * @param flush_page 按页刷新：data = 128 字节页数据（SH1106 页格式）。
- *                   HAL 内部做脏页跟踪，仅变化页会触发回调 → 动画更丝滑。
- * @param key_down   某键当前是否按下（瞬时状态，供 astra keyScan 状态机使用）
- * @param beep       蜂鸣器发声（频率 Hz）
- */
+/* 功能：main 送来的三个口 */
 void astra_hal_set_flush_page_cb(void (*flush_page)(uint8_t page, const uint8_t *data));
 void astra_hal_set_key_down_cb(bool (*key_down)(uint8_t idx));
 void astra_hal_set_beep_cb(void (*beep)(float freq));
 
-/** ESP32 版 HAL 实现 */
+/* 功能：ESP32 版硬件实现 */
 class AstraHALEsp32 : public HAL {
 public:
   ~AstraHALEsp32() override = default;
@@ -67,4 +66,4 @@ protected:
   bool _getKey(key::KEY_INDEX _keyIndex) override;
 };
 
-#endif //ASTRA_HAL_ESP32_H_
+#endif

@@ -1,6 +1,11 @@
-/**
- * @file  astra_glue.h
- * @brief astra UI 与智能家居业务之间的胶水层（C 入口，实现见 astra_glue.cpp）
+/*
+ * 模块：
+ *   界面和业务的中间层。给 main.c 一个口子，调用它就能起界面，
+ *   所以被 main.c 调用；自己向下用 astra_rocket 搭界面、
+ *   用 device_model 读设备状态。具体写法在 astra_glue.cpp。
+ *
+ * 功能：
+ *   起界面任务
  */
 #pragma once
 
@@ -8,7 +13,7 @@
 extern "C" {
 #endif
 
-/** 创建 astra UI 任务（OLED 渲染 + 五键导航由该任务全权负责） */
+/* 功能：起界面任务 */
 void astra_ui_start(void);
 
 #ifdef __cplusplus

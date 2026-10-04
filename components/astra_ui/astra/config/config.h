@@ -1,6 +1,13 @@
-//
-// Created by Fir on 2024/1/25.
-//
+/*
+ * 模块：
+ *   界面参数表。屏幕多大、每行摆在哪、动画跑多快都记在这里，
+ *   被整个界面层读取；谁要画东西先来这里取值。
+ *
+ * 功能：
+ *   定屏幕尺寸
+ *   定每行位置
+ *   定动画速度
+ */
 
 #pragma once
 #ifndef ASTRA_CORE_SRC_SYSTEM_H_
@@ -10,12 +17,9 @@
 #include "u8g2.h"
 
 namespace astra {
-/**
- * @brief config of astra ui. astra ui的配置结构体
- */
+/* 功能：界面参数打包 */
 struct config {
-  // ESP32 移植：本机帧率低于原 STM32 目标（~30 FPS 全屏 / 更高局部），
-  // 原速度值几何收敛过慢（尾部拖行数百帧）；整体上调速度、更快到位
+  /* 功能：帧率低就调快动画 */
   float tileAnimationSpeed = 90;
   float listAnimationSpeed = 85;
   float selectorYAnimationSpeed = 85;
@@ -39,66 +43,51 @@ struct config {
 
   float listBarWeight = 5;
   float listTextHeight = 8;
-  float listTextMargin = 4; //文字边距
+  float listTextMargin = 4; /* 功能：文字边距 */
   float listLineHeight = 16;
   float selectorRadius = 0.5f;
-  float selectorMargin = 4; //选择框与文字左边距
-  float selectorTopMargin = 2; //选择框与文字上边距
+  float selectorMargin = 4; /* 功能：框离文字多远 */
+  float selectorTopMargin = 2; /* 功能：框比文字高多少 */
 
-  uint8_t listPageTurningMode = 1; //0: 翻页模式 1: 滚动模式
+  uint8_t listPageTurningMode = 1; /* 功能：0 翻页 1 滚动 */
 
   float tilePicWidth = 30;
   float tilePicHeight = 30;
   float tilePicMargin = 8;
-  float tilePicTopMargin = 8; //图标上边距
+  float tilePicTopMargin = 8; /* 功能：图标上边距 */
   float tileArrowWidth = 6;
-  float tileArrowMargin = 4; //箭头边距
+  float tileArrowMargin = 4; /* 功能：箭头边距 */
 
-  //todo 如果有问题 给下面这三个分别+1
-  float tileDottedLineBottomMargin = 18; //虚线下边距(top: 46)
-  float tileArrowBottomMargin = 8; //箭头下边距(top: 56)
-  float tileTextBottomMargin = 12; //标题下边距(top: 52)
+  /* 功能：这三个数值要配套改 */
+  float tileDottedLineBottomMargin = 18; /* 功能：虚线的下边留白 */
+  float tileArrowBottomMargin = 8; /* 功能：箭头的下边留白 */
+  float tileTextBottomMargin = 12; /* 功能：标题的下边留白 */
 
-  float tileBarHeight = 2; //磁贴进度条高度
+  float tileBarHeight = 2; /* 功能：进度条多高 */
 
-  float tileSelectBoxLineLength = 5;  //磁贴选择框线长
-  float tileSelectBoxMargin = 3; //选择框边距
-  float tileSelectBoxWidth = tileSelectBoxMargin * 2 + tilePicWidth; //选择框宽
-  float tileSelectBoxHeight = tileSelectBoxMargin * 2 + tilePicHeight; //选择框高
-  float tileTitleHeight = 8; //磁贴标题高度
+  float tileSelectBoxLineLength = 5;  /* 功能：选择框的角多长 */
+  float tileSelectBoxMargin = 3; /* 功能：选择框边距 */
+  float tileSelectBoxWidth = tileSelectBoxMargin * 2 + tilePicWidth; /* 功能：选择框多宽 */
+  float tileSelectBoxHeight = tileSelectBoxMargin * 2 + tilePicHeight; /* 功能：选择框多高 */
+  float tileTitleHeight = 8; /* 功能：磁贴标题多高 */
 
-  float tileBtnMargin = 16; //按钮边距
+  float tileBtnMargin = 16; /* 功能：按钮边距 */
 
-  float popMargin = 4; //弹窗边距
-  float popRadius = 2; //弹窗圆角半径
-  float popSpeed = 90; //弹窗动画速度
+  float popMargin = 4; /* 功能：弹窗边距 */
+  float popRadius = 2; /* 功能：弹窗圆角多大 */
+  float popSpeed = 90; /* 功能：弹窗动画快慢 */
 
-  float logoStarLength = 2; //logo星星长度
-  float logoTextHeight = 14; //logo文字高度
-  float logoCopyRightHeight = 8; //logo文字高度
-  uint8_t logoStarNum = 16; //logo星星数量
-  // ESP32 移植：原字体 u8g2_font_Cascadia / u8g2_font_myfont 为本项目 u8g2 库所无，
-  // 替换为 wqy12 中文字体（含 ASCII）与 6x10 英文等宽字体
+  float logoStarLength = 2; /* 功能：星星的线多长 */
+  float logoTextHeight = 14; /* 功能：logo 文字多高 */
+  float logoCopyRightHeight = 8; /* 功能：版权字多高 */
+  uint8_t logoStarNum = 16; /* 功能：星星画几颗 */
+  /* 功能：换成能显中文的字体 */
   const uint8_t *logoTitleFont = u8g2_font_wqy12_t_gb2312;
   const uint8_t *logoCopyRightFont = u8g2_font_6x10_tf;
 
   const uint8_t *mainFont = u8g2_font_wqy12_t_gb2312;
 
-  // ---------------------------------------------------------------------
-  //  128x64 屏的【纵向行基线】——主页 / 传感器页共用
-  // ---------------------------------------------------------------------
-  //  为什么要有这几个常数：本工程 u8g2 里最小的中文字体是 wqy12（行高 ≈13px），
-  //  10x20_mn 大字号行高 ≈21px，64px 高的屏只放得下 4 行（标题 + 大字号 + 2 行中文）。
-  //  2026-09-28 修过一个排版事故：主页把后三行画在 y=49/58/62（基线只差 4~9px），
-  //  三行叠在一起，除温湿度外全糊；根因就是"凭手感给 y"，没有行高预算。
-  //  现在统一从这几个常数取，并且 tools/ui_layout_preview.c 在 PC 上用【同一组数字】
-  //  + 同一批字模渲染成 ASCII 图，改排版前后都能先看一眼再烧板子。
-  //
-  //  行盒预算（y 从 0 到 63）：
-  //      标题行   0..13    基线 11
-  //      大字号行 13..34   基线 29
-  //      第三行   34..47   基线 45
-  //      第四行   47..60   基线 58
+  /* 功能：四行文字的基线 */
   float rowTitleY = 11;
   float rowBigY   = 29;
   float row3Y     = 45;
@@ -110,4 +99,4 @@ static config &getUIConfig() {
   return astraConfig;
 }
 }
-#endif //ASTRA_CORE_SRC_SYSTEM_H_
+#endif

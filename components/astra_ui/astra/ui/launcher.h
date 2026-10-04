@@ -1,6 +1,13 @@
-//
-// Created by Fir on 2024/2/2.
-//
+/*
+ * 模块：
+ *   界面启动器。管页面的开和关、选择框和画面跟着动，被 astra_rocket.cpp
+ *   起停并每帧调用，自己向下用 item.h 里的页面类。
+ *
+ * 功能：
+ *   开选中页
+ *   回上一页
+ *   每帧刷画面
+ */
 #pragma once
 #ifndef ASTRA_CORE_SRC_ASTRA_UI_SCHEDULER_H_
 #define ASTRA_CORE_SRC_ASTRA_UI_SCHEDULER_H_
@@ -18,7 +25,7 @@ private:
   uint64_t time;
 
 public:
-  virtual ~Launcher() = default;  /* ESP32 移植：astraCoreDestroy 经基类指针 delete */
+  virtual ~Launcher() = default;  /* 功能：删启动器走这里 */
 
   void popInfo(std::string _info, uint16_t _time);
 
@@ -27,13 +34,10 @@ public:
   bool open();
   bool close();
 
-  // ESP32 移植：页面内容动态变化（无人机列表重建）后由业务层调用。
-  // 仅当 _page 为当前页时生效：钳位选中项、重注入选择框、摄像机复位。
+  /* 功能：页面内容变了重画 */
   void refreshPage(Menu* _page);
 
-  // ESP32 移植：业务层直接导航到指定页（日志页 OK → 热点信息页等
-  // 按键驱动跳转）。目标页需已挂好 parent（getPreview 依赖 parent 返回上一页）。
-  // 跳过 open() 的 getNext/空页检查——调用方保证目标页有效。
+  /* 功能：直接跳到指定页 */
   bool openTarget(Menu* _page);
 
   void update();
@@ -43,4 +47,4 @@ public:
 };
 }
 
-#endif //ASTRA_CORE_SRC_ASTRA_UI_SCHEDULER_H_
+#endif

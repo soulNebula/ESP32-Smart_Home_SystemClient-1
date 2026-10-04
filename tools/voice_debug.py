@@ -1,45 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-voice_debug.py —— ESP32 智能家居「语音识别」本地调试器（PC 版）
+模块：
+  语音识别的电脑版调试器。板子上那条语音链是麦克风采音、离线识别唤醒词、
+  再认命令词；这里用电脑麦克风和 vosk 离线识别把同样的事做一遍，
+  方便改命令词、看 JSON 事件，不用一趟趟烧板子。
+  行为跟板子一样：先喊唤醒词，六秒内说命令词，命中就顺延六秒，
+  一直没说话就回休眠。命令行能开麦克风、跳过唤醒词、直接注入一句话、
+  列命令词表、选音频设备、换模型目录；每条结果打一行 JSON，
+  可以直接喂给别的程序。要用 pip install vosk sounddevice。
+  命令词表要跟固件一致：一条是中文、代号、对应的设备指令，格式照抄协议文档。
+  模型默认放系统目录，而且必须全是英文字母：识别库在 Windows 上打不开带中文的
+  路径，放系统目录就天然没问题。
+  找模型时挨个地方试着找：先看指定目录，再看系统目录，最后看工程里；
+  路径带中文的地方识别库打不开，所以优先前面两个。
+  不喊唤醒词的那种一直听着；要喊唤醒词的那种一开始是关着的，等喊了才开。
 
-把固件里的 ESP-SR 唤醒链（INMP441 + WakeNet + MultiNet）用 vosk 离线中文
-识别在 PC 上复刻一遍，方便在本地调试命令词和 JSON 事件，不用反复烧板子。
-
-行为与固件一致（docs/13-语音模块-ESP-SR.md 第 2/3 节）：
-  1. 先喊唤醒词「你好小智」→ 输出 wake JSON；
-  2. 6 秒内说命令词（25 条之一）→ 输出 cmd JSON（含对应的 MQTT 设备指令）；
-  3. 每条命令命中后窗口顺延 6 秒（连续命令模式），静默 6 秒自动回休眠。
-
-用法：
-  python voice_debug.py                      # 麦克风 + 唤醒词 + 命令词（默认）
-  python voice_debug.py --no-wake            # 跳过唤醒词，直接说命令
-  python voice_debug.py --say 打开厨房灯      # 不碰麦克风，直接注入一条命令（模拟固件 say）
-  python voice_debug.py --list               # 打印 25 条命令词表
-  python voice_debug.py --list-devices       # 列出音频设备（--device 选编号）
-  python voice_debug.py --wake 小智小智       # 自定义唤醒词
-  python voice_debug.py --device 1           # 选麦克风设备编号
-  python voice_debug.py --model D:\\vosk-cn   # 指定模型目录（缺省自动下载到
-                                             # %LOCALAPPDATA%\\vosk-models，必须不含中文）
-
-输出 JSON（每行一条，可直接喂给别的程序）：
-  {"ts": 1717200000, "event": "wake", "word": "你好小智"}
-  {"ts": 1717200000, "event": "cmd", "voice_cmd": "led_kitchen_on",
-   "text": "打开厨房灯", "raw": "打开厨房灯",
-   "mqtt": {"dev": "led_kitchen", "action": "on"}}
-  {"ts": 1717200000, "event": "timeout"}
-  {"ts": 1717200000, "event": "unknown", "text": "……"}
-
-依赖安装：
-  pip install vosk sounddevice
-  中文模型（约 42MB）首次运行自动下载；手动下载：
-  https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip
-  解压后把 vosk-model-small-cn 目录放到本脚本旁边，或用 --model 指定。
-
-注意：
-  · vosk 是通用识别（非命令词专用），唤醒词/命令词按【文本包含】匹配，
-    识别率不如固件的 MultiNet 精确模型，本地调试够用；
-  · 若 Windows 控制台中文乱码：先运行 `chcp 65001`，或使用 Windows Terminal。
+功能：
+  听麦克风认唤醒词
+  匹配命令词
+  打印 JSON 事件
+  能直接注入一句话
 """
 
 import argparse
@@ -56,11 +37,7 @@ WINDOW_SECONDS = 6.0            # 与固件 VOICE_SR_MN_DURATION_MS 一致
 MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip"
 MODEL_DIR_NAME = "vosk-model-small-cn"
 
-# ---------------------------------------------------------------------------
-# 命令词表 —— 与 components/BSP/VOICE/voice_esp_sr.c 的 s_cmds[] 一一对应
-# 三元组：(中文命令词, voice_cmd 名, 对应的 MQTT 指令 JSON)
-# mqtt 字段的格式照抄 docs/05-MQTT协议.md 第 3 节（auto 不需要 dev）。
-# ---------------------------------------------------------------------------
+# 功能：命令词表要跟固件一致
 CMDS = [
     ("打开客厅灯", "led_living_on",  {"dev": "led_living", "action": "on"}),
     ("关闭客厅灯", "led_living_off", {"dev": "led_living", "action": "off"}),
@@ -91,19 +68,14 @@ CMDS = [
 
 
 def norm(text: str) -> str:
-    """归一化：去掉空白和常见标点，用于匹配（vosk 输出可能带标点）。"""
+    """功能：去掉标点和空格"""
     for ch in "，。！？、,.;;:：\"' \t":
         text = text.replace(ch, "")
     return text.strip()
 
 
 def match_command(text: str):
-    """
-    把识别文本匹配到命令词表。
-    返回 (voice_cmd, 中文命令词, mqtt_json) 或 None。
-    策略：先精确匹配；再双向包含（识别文本包含命令词 或 命令词包含识别文本），
-    多条候选时取【命令词最长】的（"打开客厅灯" 比 "打开门" 更具体）。
-    """
+    """功能：把听到的话对上命令词"""
     t = norm(text)
     if not t:
         return None
@@ -122,32 +94,25 @@ def match_command(text: str):
 
 
 def emit(event: str, **fields):
-    """输出一行 JSON（UTF-8，字段顺序固定方便阅读）。"""
+    """功能：打一行结果出去"""
     obj = {"ts": int(time.time()), "event": event}
     obj.update(fields)
     print(json.dumps(obj, ensure_ascii=False), flush=True)
 
 
-# ---------------------------------------------------------------------------
-# 模型定位与下载
-# ---------------------------------------------------------------------------
+# 功能：找模型、缺了就下
 def _is_model_dir(p: Path) -> bool:
-    """vosk 模型目录的判据：存在 am 子目录。"""
+    """功能：有 am 目录才算模型"""
     return p.is_dir() and (p / "am").is_dir()
 
 
 def _default_model_home() -> Path:
-    """模型默认存放位置。
-    ★ 必须是纯 ASCII 路径：vosk 的 C++ 加载器在 Windows 上打不开含中文的
-    路径（实测本项目路径含"智能家居"时 Model() 报 Failed to create a model）。
-    %LOCALAPPDATA% = C:\\Users\\<名>\\AppData\\Local，天然纯 ASCII。"""
+    """功能：模型默认放系统目录"""
     return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "vosk-models"
 
 
 def find_model(args) -> str:
-    """按优先级找模型：--model > LOCALAPPDATA\\vosk-models > 脚本旁/项目根。
-    兼容手动下载后的目录名（vosk-model-small-cn 或 vosk-model-small-cn-0.22）。
-    ⚠ 若项目路径含中文，脚本旁/项目根这两个候选 vosk 会打不开，优先用前两个。"""
+    """功能：挨个地方试着找模型"""
     names = [MODEL_DIR_NAME, MODEL_DIR_NAME + "-0.22"]
     candidates = []
     if args.model:
@@ -166,7 +131,7 @@ def find_model(args) -> str:
 
 
 def download_model(target_dir: Path) -> bool:
-    """下载并解压 vosk 中文小模型到 target_dir 下；返回是否成功。"""
+    """功能：下载并解压中文模型"""
     zip_path = target_dir / (MODEL_DIR_NAME + ".zip")
     print(f"首次运行需要中文识别模型（约 42MB），正在下载到 {zip_path} ...")
     try:
@@ -180,8 +145,7 @@ def download_model(target_dir: Path) -> bool:
         with zipfile.ZipFile(zip_path) as z:
             z.extractall(target_dir)
         zip_path.unlink(missing_ok=True)
-        # 压缩包内顶层目录名带版本号（vosk-model-small-cn-0.22），统一改回
-        # 无版本号的名字，方便 find_model 查找。
+        # 功能：目录名去掉版本号
         extracted = target_dir / (MODEL_DIR_NAME + "-0.22")
         renamed = target_dir / MODEL_DIR_NAME
         if extracted.is_dir() and not renamed.exists():
@@ -195,9 +159,7 @@ def download_model(target_dir: Path) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# 麦克风实时识别
-# ---------------------------------------------------------------------------
+# 功能：开麦克风实时听
 def run_mic(args, model_path: str):
     import sounddevice as sd
 
@@ -214,7 +176,7 @@ def run_mic(args, model_path: str):
     need_wake = not args.no_wake
     window_sec = args.window
     awake = not need_wake               # --no-wake 时一直处于"听命令"状态
-    # --no-wake 时窗口永不超时（inf）；否则初始为 0，等唤醒词打开窗口
+    # 功能：不喊唤醒词就一直听
     window_deadline = float("inf") if not need_wake else 0.0
     last_partial = ""
 
@@ -230,23 +192,23 @@ def run_mic(args, model_path: str):
                 return
             t = norm(text)
 
-            # 1) 唤醒词：休眠状态下识别到唤醒词 → 进窗口
+            # 功能：听见唤醒词就开窗口
             if not awake and wake_norm and wake_norm in t:
                 awake = True
                 window_deadline = time.time() + window_sec
                 emit("wake", word=args.wake, raw=text)
                 return
 
-            # 2) 命令词：唤醒窗口内匹配命令表
+            # 功能：窗口里就认命令词
             if awake:
                 if time.time() > window_deadline:
-                    # 窗口已过（超时事件在 run 主循环打），这里只重置状态
+                    # 功能：超时了，回休眠
                     awake = False
                     return
                 hit = match_command(text)
                 if hit:
                     vc, cn, mqtt = hit
-                    window_deadline = time.time() + window_sec  # 连续命令：顺延
+                    window_deadline = time.time() + window_sec  # 功能：说话就再等六秒
                     emit("cmd", voice_cmd=vc, text=cn, raw=text, mqtt=mqtt)
                 else:
                     emit("unknown", text=text)
@@ -268,7 +230,7 @@ def run_mic(args, model_path: str):
                                channels=1, callback=on_audio):
             while True:
                 time.sleep(0.2)
-                # 唤醒窗口超时 → 回休眠（与固件的 ESP_MN_STATE_TIMEOUT 一致）
+                # 功能：等不到话就回休眠
                 if awake and time.time() > window_deadline:
                     awake = False
                     emit("timeout")
@@ -278,9 +240,7 @@ def run_mic(args, model_path: str):
         emit("exit")
 
 
-# ---------------------------------------------------------------------------
-# 无麦克风注入模式（模拟固件串口台的 say 命令）
-# ---------------------------------------------------------------------------
+# 功能：不用麦克风，直接喂一句
 def run_say(args):
     text = "".join(args.say) if isinstance(args.say, list) else args.say
     print(f"  [模拟语音] {text}")
@@ -311,7 +271,7 @@ def main():
     ap.add_argument("--no-download", action="store_true", help="禁止自动下载模型")
     args = ap.parse_args()
 
-    # --list：打印命令词表（与固件 voice-test 的格式对应）
+    # 功能：列命令词表就走人
     if args.list:
         print("============ 语音命令词表（与固件 s_cmds[] 一致） ============")
         print(f"  唤醒词： 「{args.wake}」")
@@ -321,12 +281,12 @@ def main():
         print("=" * 62)
         return
 
-    # --say：注入模式，不需要模型和麦克风
+    # 功能：直接注入，不用模型
     if args.say:
         run_say(args)
         return
 
-    # 麦克风模式：定位/下载模型
+    # 功能：开设备前先备好模型
     try:
         from vosk import Model  # noqa: F401  提前验证依赖
         import sounddevice  # noqa: F401

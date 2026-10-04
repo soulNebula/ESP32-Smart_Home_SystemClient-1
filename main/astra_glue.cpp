@@ -1,13 +1,15 @@
-/**
- * @file astra_glue.cpp
- * @brief astra UI 框架与智能家居业务之间的胶水层（main 组件内，C++）。
- *        组件方向约束：astra_ui 不能反向依赖 main —— OLED 刷新/按键读取
- *        以回调注入 HAL，业务数据（传感器/设备/自检状态）每帧写进页面字段。
+/*
+ * 模块：
+ *   界面和业务的中间层。被 main.c 调用后起界面任务；向下用 astra 界面框架
+ *   搭页面，把设备、传感器、网络、自检这些数据每帧写进页面字段；屏幕刷新和
+ *   五键读取则以回调方式交给界面框架，页面按确定键时再回来执行动作。
+ *   五键对应关系：3=上、4=下、1=左、2=右、OK=确定。
  *
- * 键位（astra 键序 {UP, DOWN, LEFT, RIGHT, OK} → 本机五键键盘）：
- *        本键盘实测布局        [3]
- *   [1]  [OK]  [2]    →  3=UP、4=DOWN、1=LEFT、2=RIGHT，无需旋转
- *         [4]
+ * 功能：
+ *   起界面任务
+ *   每帧刷新页面数据
+ *   接五键和屏幕
+ *   按确定就执行动作
  */
 #include <cstdio>
 #include <cstring>
@@ -26,7 +28,7 @@ extern "C" {
 #include "wifi_sta.h"
 #include "mqtt_app.h"
 #include "selftest.h"
-#include "voice_esp_sr.h"   /* 语音识别 → OLED 弹窗提示（无喇叭方案的"反馈音"） */
+#include "voice_esp_sr.h"   /* 功能：语音识别弹窗提示 */
 }
 
 #include "astra_rocket.h"
@@ -34,10 +36,10 @@ extern "C" {
 
 static const char *TAG = "astra_glue";
 
-/* astra 键序 {UP, DOWN, LEFT, RIGHT, OK} → 本机 adkey_id_t（见文件头键位图） */
+/* 功能：界面键位换成本机键 */
 static const adkey_id_t KEY_MAP[key::KEY_NUM] = { ADKEY_3, ADKEY_4, ADKEY_1, ADKEY_2, ADKEY_OK };
 
-/* ---------- 桥接回调（注入 astra HAL） ---------- */
+/* 功能：把硬件接口递过去 */
 
 static void flush_page_cb(uint8_t page, const uint8_t *data)
 {
@@ -54,10 +56,10 @@ static bool key_down_cb(uint8_t idx)
 
 static void beep_cb(float freq)
 {
-    (void)freq;   /* 本机无蜂鸣器 */
+    (void)freq;   /* 功能：本机没蜂鸣器 */
 }
 
-/* ---------- 页面 OK 回调（业务动作） ---------- */
+/* 功能：页面按确定干啥 */
 
 static void selftest_ok_cb(int itemIndex)
 {
@@ -68,7 +70,7 @@ static void selftest_ok_cb(int itemIndex)
 
 static void device_ok_cb(int itemIndex)
 {
-    /* 8 行顺序：4 灯 + 风扇 + 窗/门/窗帘 */
+    /* 功能：页面八行对八设备 */
     static const device_id_t devs[UI_DEVICE_ITEMS] = {
         DEV_LED_LIVING, DEV_LED_KITCHEN, DEV_LED_BEDROOM, DEV_LED_BATH,
         DEV_FAN, DEV_WINDOW, DEV_DOOR, DEV_CURTAIN,
@@ -87,7 +89,7 @@ static void auto_ok_cb(void)
     ESP_LOGI(TAG, "auto mode -> %s (by adkey)", now ? "ON" : "OFF");
 }
 
-/* ---------- 每帧动态数据刷新 ---------- */
+/* 功能：每帧刷新页面 */
 
 static const char *const s_dev_cn[UI_DEVICE_ITEMS] = {
     "客厅灯", "厨房灯", "卧室灯", "浴室灯", "风扇", "窗户", "门", "窗帘",
@@ -198,14 +200,14 @@ static void refresh_dynamic(void)
     refresh_auto();
 }
 
-/* ---------- UI 任务 ---------- */
+/* 功能：界面任务主体 */
 
 static void astra_ui_task(void *arg)
 {
     (void)arg;
     ESP_LOGI(TAG, "astra UI task start");
 
-    /* 注入桥接回调（必须在 astraCoreInit / 首次渲染之前） */
+    /* 功能：先把接口递过去 */
     astra_hal_set_flush_page_cb(flush_page_cb);
     astra_hal_set_key_down_cb(key_down_cb);
     astra_hal_set_beep_cb(beep_cb);
@@ -223,22 +225,20 @@ static void astra_ui_task(void *arg)
         refresh_dynamic();
         astraLauncher->update();
 
-        /* 语音提示弹窗（ESP-SR 识别任务写入，本任务消费）：
-         * 先拷贝文字再清零 pending，避免弹窗期间文字被下一条覆盖。
-         * 时长 1.2s（2026-10-02 用户反馈：2s 时第二条指令来了还在显示第一条）。 */
+        /* 功能：弹一句语音提示 */
         if (g_voice_ui_note.pending) {
             std::string note(g_voice_ui_note.text);
             g_voice_ui_note.pending = 0;
             astraLauncher->popInfo(note, 1200);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1));   /* 1000Hz 节拍下 1ms */
+        vTaskDelay(pdMS_TO_TICKS(1));   /* 功能：歇一小会儿 */
     }
 }
 
 extern "C" void astra_ui_start(void)
 {
-    /* 栈给大一点：u8g2 画布渲染 + 阻塞弹窗循环都在这个任务里 */
+    /* 功能：栈开大点够用 */
     if (xTaskCreate(astra_ui_task, "astra_ui", 12288, NULL, 3, NULL) != pdPASS) {
         ESP_LOGE(TAG, "create astra ui task failed");
     }

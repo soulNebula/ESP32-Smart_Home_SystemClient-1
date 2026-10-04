@@ -1,62 +1,15 @@
-# =============================================================================
-#  tools/flash.ps1  --  Reliable flash for this board
-# =============================================================================
-#  WHY THIS SCRIPT EXISTS (real hardware finding, 2026-09-30)
-#  ----------------------------------------------------------
-#  Plain `idf.py flash` (and therefore tools/build.ps1 -Task flash) FAILS on
-#  this board:  the large application image (1.95 MB) is written but never
-#  verifies:
+﻿# 模块：
+#   可靠烧录。这块板子用普通烧录会失败：大镜像写进去了但校验不过，
+#   板子反复重启。实测发现只要先整片擦除再写就一定能过，
+#   所以脚本改成不压缩写入，校验失败就自动擦一次重写。
+#   它跟编译烧录脚本 build.ps1 是同一件事的两条路，向下调 esptool。
+#   动手之前只看端口列表，不打开端口试，免得把别人的烧录搅了。
 #
-#      0x0      bootloader.bin        22368 B  ->  Hash of data verified.   OK
-#      0x20000  esp32_smart_home.bin 1954992 B  ->  A fatal error occurred:
-#                                                   MD5 of file does not match
-#                                                   data in flash!
-#
-#  What the board does then: the app partition holds wrong bytes, the 2nd stage
-#  bootloader reports
-#      E (421) esp_image: Checksum failed. Calculated 0x2 read 0x71
-#      E (422) boot: OTA app partition slot 0 is not bootable
-#      E (440) boot: No bootable app partitions in the partition table
-#  and it reboots forever.
-#
-#  WHAT IS **NOT** THE CAUSE (things that were measured and ruled out)
-#    * the image FILE is fine: `esptool image_info` says "Checksum: 71 (valid)"
-#      and "Validation Hash: ... (valid)"; the bootloader reads exactly that
-#      same 0x71 from the header - only the flash CONTENT disagrees
-#    * baud rate: identical failure at 460800, 230400 and 115200
-#    * flaky transfer: the wrong "Flash md5" is byte-identical on every retry
-#    * compression: `--no-compress` ALONE still fails (measured), so esptool's
-#      compressed transfer is NOT sufficient explanation either
-#
-#  WHAT THE EVIDENCE ACTUALLY SHOWS
-#    Every attempt that started with a FULL CHIP ERASE succeeded; every attempt
-#    that did not, failed.  6 out of 6 observations:
-#        00:17  erase-flash then write        -> OK
-#        00:25  write only                    -> FAIL
-#        00:27  write only                    -> FAIL
-#        00:29  write only                    -> FAIL
-#        00:32  erase-flash then write        -> OK
-#        00:37  write only                    -> FAIL
-#    Conclusion: the per-region sector erase that esptool performs as part of
-#    write_flash ("Flash will be erased from 0x00020000 to 0x001fdfff...") is
-#    not reliable on this board, so programming over previously-written pages
-#    produces corrupt data.  A chip erase first fixes it.  (The exact silicon
-#    reason is not proven - what is proven is the procedure.)
-#
-#  So this script: writes uncompressed, and if verification fails WITHOUT an
-#  erase it automatically retries once with a full chip erase.
-#
-#  USAGE
-#  -----
-#    powershell -ExecutionPolicy Bypass -File tools\flash.ps1
-#    powershell -ExecutionPolicy Bypass -File tools\flash.ps1 -Port COM31
-#    powershell -ExecutionPolicy Bypass -File tools\flash.ps1 -Erase     # force chip erase first
-#    powershell -ExecutionPolicy Bypass -File tools\flash.ps1 -Baud 115200
-#
-#  NOTE: this script is deliberately pure ASCII.  Windows PowerShell 5.1 reads
-#        a BOM-less UTF-8 .ps1 as ANSI, which mangles non-ASCII text - keeping
-#        the file ASCII removes that entire class of failure.
-# =============================================================================
+# 功能：
+#   检查镜像文件在不在
+#   不压缩写进板子
+#   失败就擦片重试
+#   打印校验结果
 
 [CmdletBinding()]
 param(
@@ -81,7 +34,7 @@ Say "    build dir : $BuildDir"
 Say "    force erase: $(if ($Erase) { 'YES' } else { 'no (auto-retry if verify fails)' })"
 Say ""
 
-# --- 1. sanity: build artifacts must exist ---------------------------------
+# 功能：先确认镜像都在
 $flashArgs = Join-Path $BuildDir 'flash_args'
 if (-not (Test-Path $flashArgs)) {
     Say "[FAIL] $flashArgs not found." Red
@@ -102,7 +55,7 @@ foreach ($m in $images) {
 }
 Say ""
 
-# --- 2. locate the ESP-IDF python (it has esptool installed) ---------------
+# 功能：找带 esptool 的 Python
 $pyCandidates = @(
     'E:\Espressif\python_env\idf5.4_py3.11_env\Scripts\python.exe',
     (Join-Path $env:IDF_TOOLS_PATH 'python_env\idf5.4_py3.11_env\Scripts\python.exe')
@@ -120,10 +73,7 @@ if (-not $py) {
 Say "  python    : $py"
 Say ""
 
-# --- 3. refuse to touch a busy port ---------------------------------------
-#     Opening a port just to probe it is what wedges a concurrent esptool run,
-#     so we only LIST ports (never open them) and bail out if another python
-#     may be flashing right now.
+# 功能：只读端口列表
 $busy = @(Get-Process -Name python -ErrorAction SilentlyContinue)
 if ($busy.Count -gt 0) {
     Say "[WARN] other python processes are running - is something else flashing?" Yellow
@@ -140,7 +90,7 @@ if ($ports -notcontains $Port) {
 }
 Say ""
 
-# --- 4. write (optionally erase first; auto-retry with erase) -------------
+# 功能：写入，失败就擦片重来
 $attempts = if ($Erase) { @($true) } else { @($false, $true) }
 $code = 0; $hashN = 0; $fatal = $false
 $out = @(); $usedErase = $false; $ok = $false
@@ -191,7 +141,7 @@ finally {
     Pop-Location
 }
 
-# --- 5. verdict ------------------------------------------------------------
+# 功能：最后给个结论
 Say ""
 if ($ok) {
     Say ("=== FLASH OK : {0}/5 images verified{1} ===" -f `

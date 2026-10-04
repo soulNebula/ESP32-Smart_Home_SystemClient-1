@@ -1,4 +1,13 @@
-﻿#  verify_adkey.ps1 键盘实机验证
+﻿# 模块：
+#   键盘实机验证。请在指定秒数内依次按五个键，脚本一边收串口输出，
+#   一边把每个键的按下、抬起、长短按和电压读出来，最后给一张表：
+#   哪个键没反应、OK 键是不是还是老毛病。日志存到 logs 目录。
+#   电脑上的判键单测是 run_adkey_test.ps1，这个是插板子实测。
+#
+# 功能：
+#   收串口按键事件
+#   统计每个键的次数
+#   打印验证报告
 [CmdletBinding()]
 param(
     [string]$Port    = '',
@@ -13,7 +22,7 @@ $projectDir = (Get-Item (Split-Path -Parent $PSScriptRoot)).FullName
 $logDir     = Join-Path $projectDir 'logs'
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 
-$BT = @('COM3', 'COM4', 'COM8', 'COM9')   # 这些是蓝牙虚拟串口
+$BT = @('COM3', 'COM4', 'COM8', 'COM9')   # 功能：这几个是蓝牙口
 
 function Parse-AdkeyLog {
     param([string[]]$Lines)
@@ -98,7 +107,7 @@ function Show-Report {
     return 0
 }
 
-#  回放模式
+#  功能：回放存好的日志
 if ($Replay) {
     if (-not (Test-Path $Replay)) { Write-Host "[FAIL] 日志不存在: $Replay" -ForegroundColor Red; exit 1 }
     $lines = Get-Content $Replay
@@ -106,7 +115,7 @@ if ($Replay) {
     exit (Show-Report -Stat $stat -Source $Replay)
 }
 
-#  端口
+#  功能：没给端口就自己挑
 if (-not $Port) {
     $cand = @([System.IO.Ports.SerialPort]::GetPortNames()) | Where-Object { $BT -notcontains $_ }
     if (-not $cand) {

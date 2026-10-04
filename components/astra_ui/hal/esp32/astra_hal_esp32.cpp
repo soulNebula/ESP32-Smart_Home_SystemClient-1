@@ -1,7 +1,14 @@
-//
-// astra_hal_esp32.cpp
-// ESP32 移植的 astra HAL 实现。
-//
+/*
+ * 模块：
+ *   界面层的画布实现。在内存里用 u8g2 画图，画完只把变了的那几页
+ *   交给 main 的屏幕驱动送出去；按键和蜂鸣器走 main 送来的口，
+ *   被 astra_rocket.cpp 装上使用。
+ *
+ * 功能：
+ *   开一块画布
+ *   只刷变化页
+ *   画字画框画点
+ */
 #include <cstring>
 #include "astra_hal_esp32.h"
 #include "u8g2.h"
@@ -10,7 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-/* ---------- main 组件注入的桥接回调 ---------- */
+/* 功能：main 送来的三个口 */
 static void (*g_flush_page_cb)(uint8_t page, const uint8_t *data) = nullptr;
 static bool (*g_key_down_cb)(uint8_t idx) = nullptr;
 static void (*g_beep_cb)(float freq) = nullptr;
@@ -19,14 +26,14 @@ void astra_hal_set_flush_page_cb(void (*flush_page)(uint8_t page, const uint8_t 
 void astra_hal_set_key_down_cb(bool (*key_down)(uint8_t idx)) { g_key_down_cb = key_down; }
 void astra_hal_set_beep_cb(void (*beep)(float freq)) { g_beep_cb = beep; }
 
-/* ---------- 纯软件画布：u8g2 全缓冲实例，绝不发送显示 ---------- */
+/* 功能：内存里的整屏画布 */
 
 static u8g2_t g_canvas;
 
 static uint8_t dummy_byte_cb(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr)
 {
     (void)u8x8; (void)msg; (void)arg_int; (void)arg_ptr;
-    return 0;   /* 纯软件画布：字节过程不接任何硬件 */
+    return 0;   /* 功能：不接任何硬件 */
 }
 
 static uint8_t dummy_gpio_cb(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr)
@@ -35,10 +42,11 @@ static uint8_t dummy_gpio_cb(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *a
     return 0;
 }
 
+/* 功能：把画布准备好 */
 void AstraHALEsp32::init()
 {
-    /* 全缓冲软件画布（SH1106 128×64 同布局：16×8 瓦片，竖列 LSB=页字节格式） */
-    u8g2_Setup_ssd1306_128x64_noname_f(&g_canvas, U8G2_R0, dummy_byte_cb, dummy_gpio_cb);   /* 0.96" SSD1306(原项目 1.3" SH1106)*/
+    /* 功能：开一块整屏画布 */
+    u8g2_Setup_ssd1306_128x64_noname_f(&g_canvas, U8G2_R0, dummy_byte_cb, dummy_gpio_cb);   /* 功能：用屏幕芯片的驱动 */
     u8g2_SetFont(&g_canvas, astra::getUIConfig().mainFont);
 }
 
@@ -57,17 +65,16 @@ uint8_t AstraHALEsp32::_getBufferTileWidth()
     return 16;
 }
 
+/* 功能：把画布擦干净 */
 void AstraHALEsp32::_canvasClear()
 {
     u8g2_ClearBuffer(&g_canvas);
 }
 
+/* 功能：把变了的页送出去 */
 void AstraHALEsp32::_canvasUpdate()
 {
-    /* u8g2 全缓冲为页连续布局（u8g2_ll_hvline.c: offset=(y&~7)*16+x），
-     * 第 p 页 = buf[p*128..p*128+127]，字节竖列 LSB 在顶，与 SH1106 页格式一致。
-     * 脏页跟踪：只写变化页。静态界面零 I²C 流量，选择框/文字等局部动画
-     * 只写 1~5 页（每页 ~6ms），动画帧率大幅提升。 */
+    /* 功能：只把变了的页送出去 */
     static uint8_t last[8 * 128];
     static bool inited = false;
 
@@ -85,13 +92,11 @@ void AstraHALEsp32::_canvasUpdate()
     }
     inited = true;
 
-    /* 让出 CPU 喂任务看门狗：框架的阻塞渲染循环（弹窗/校准）内部没有延时。
-     * 必须 vTaskDelay(1)（1 tick）——pdMS_TO_TICKS(1) 在 100Hz 下整数除法=0。
-     * 本机 CONFIG_FREERTOS_HZ=1000 → 1 tick = 1ms。 */
+    /* 功能：让一下 CPU 喂狗 */
     vTaskDelay(1);
 }
 
-/* ---------- 字体 ---------- */
+/* 功能：字体相关 */
 
 void AstraHALEsp32::_setFont(const uint8_t *_font)
 {
@@ -115,21 +120,23 @@ uint8_t AstraHALEsp32::_getFontHeight()
 
 void AstraHALEsp32::_setDrawType(uint8_t _type)
 {
-    u8g2_SetDrawColor(&g_canvas, _type);    /* astra: 0=关 1=实色 2=反色(XOR) 与 u8g2 一致 */
+    u8g2_SetDrawColor(&g_canvas, _type);    /* 功能：0关 1实 2反色 */
 }
 
-/* ---------- 绘制原语（坐标约定：文字为左下角/基线，几何为左上角，与框架一致） ---------- */
+/* 功能：画点画线画字 */
 
 void AstraHALEsp32::_drawPixel(float _x, float _y)
 {
     u8g2_DrawPixel(&g_canvas, (u8g2_uint_t)_x, (u8g2_uint_t)_y);
 }
 
+/* 功能：画英文字 */
 void AstraHALEsp32::_drawEnglish(float _x, float _y, const std::string &_text)
 {
     u8g2_DrawStr(&g_canvas, (u8g2_uint_t)_x, (u8g2_uint_t)_y, _text.c_str());
 }
 
+/* 功能：画中文字 */
 void AstraHALEsp32::_drawChinese(float _x, float _y, const std::string &_text)
 {
     u8g2_DrawUTF8(&g_canvas, (u8g2_uint_t)_x, (u8g2_uint_t)_y, _text.c_str());
@@ -183,13 +190,15 @@ void AstraHALEsp32::_drawRFrame(float _x, float _y, float _w, float _h, float _r
                     (u8g2_uint_t)_w, (u8g2_uint_t)_h, (u8g2_uint_t)_r);
 }
 
-/* ---------- 系统 ---------- */
+/* 功能：时间相关 */
 
+/* 功能：等一会儿 */
 void AstraHALEsp32::_delay(unsigned long _mill)
 {
     vTaskDelay(pdMS_TO_TICKS(_mill));
 }
 
+/* 功能：开机到现在几毫秒 */
 unsigned long AstraHALEsp32::_millis()
 {
     return (unsigned long)(esp_timer_get_time() / 1000);
@@ -205,20 +214,23 @@ unsigned long AstraHALEsp32::_getRandomSeed()
     return (unsigned long)esp_random();
 }
 
-/* ---------- 蜂鸣器 ---------- */
+/* 功能：蜂鸣器相关 */
 
+/* 功能：响一声 */
 void AstraHALEsp32::_beep(float _freq)
 {
     if (g_beep_cb != nullptr) g_beep_cb(_freq);
 }
 
+/* 功能：本机不用停 */
 void AstraHALEsp32::_beepStop()
 {
-    /* 本机蜂鸣器为短促阻塞发声，无需停止 */
+    /* 功能：响了就自己停 */
 }
 
-/* ---------- 按键 ---------- */
+/* 功能：按键相关 */
 
+/* 功能：问某键按下没 */
 bool AstraHALEsp32::_getKey(key::KEY_INDEX _keyIndex)
 {
     if (g_key_down_cb == nullptr) return false;

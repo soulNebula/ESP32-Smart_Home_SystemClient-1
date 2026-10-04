@@ -1,71 +1,33 @@
-# =============================================================================
-#  build.ps1 -- build / flash / monitor helper for this project on Windows
-# =============================================================================
-#  THE PROBLEM
-#  ---------------------------------------------------------------------------
-#  This project sits in a folder whose name contains non-ASCII (Chinese)
-#  characters. ESP-IDF v5.4 on Windows breaks in THREE separate places because
-#  of that, and the build cannot succeed in place:
+﻿# 模块：
+#   编译烧录看日志。在 Windows 上把代码编出来、烧进板子、看串口输出。
+#   本工程的文件夹名带中文，ESP-IDF 碰到中文路径会在三处直接崩：
+#   读配置、编译缓存、链接，所以脚本先把源码镜像一份到英文目录，
+#   在那儿编译，编完再把 sdkconfig 带回来。用 subst 映射盘符没用，实测过。
+#   它向下调 idf.py 干活，串口日志看 monitor.ps1。
+#   -Task build,flash 这种写法传进来是一整个字符串，不拆的话 idf.py 认不出，
+#   老命令就栽在这，所以脚本按逗号再拆一次，而且必须赶在展开数组之前做。
 #
-#   1. kconfig  -- tools/kconfig_new/prepare_kconfig_files.py opens
-#      build/config.env via argparse.FileType('r'), which uses the *locale*
-#      encoding (936/GBK here) while CMake writes it as UTF-8. The path is
-#      decoded into mojibake and the build dies with:
-#          FileNotFoundError: '.../build/kconfigs.in'
-#      (the message even shows the correct path, because printing the mojibake
-#       re-encodes it back into the original UTF-8 bytes)
-#
-#   2. ccache   -- compile commands are wrapped in `ccache <gcc>`, and ccache
-#      converts the path with std::filesystem + the locale, then aborts with:
-#          filesystem error: Cannot convert character sequence
-#
-#   3. ldgen    -- tools/ldgen/ldgen.py runs `xtensa-esp32s3-elf-objdump.exe`
-#      with the .a path; the native tool mangles it and reports:
-#          libxtensa.a: No such file or directory   (the file does exist)
-#
-#  NOTE: mapping an ASCII drive letter with `subst` does NOT help. CMake
-#  resolves the drive back to the real path, so the Chinese path leaks through
-#  anyway. This was tested.
-#
-#  THE FIX THIS SCRIPT IMPLEMENTS
-#  ---------------------------------------------------------------------------
-#  Mirror the source tree into a pure-ASCII directory and build THERE:
-#      <source, Chinese path>  --robocopy-->  C:\esp32_smart_home  -->  idf.py
-#
-#  Your source of truth stays where it is; you keep editing it normally.
-#  Only the build happens in the mirror. `sdkconfig` is copied in before the
-#  build and copied back afterwards, so menuconfig settings are not lost.
-#
-#  If the project path is already pure ASCII, this script just builds in place
-#  and the mirror is not used at all.
-#
-#  USAGE
-#  ---------------------------------------------------------------------------
-#    pwsh -File tools\build.ps1                  # build
-#    pwsh -File tools\build.ps1 -Task flash,monitor
-#    pwsh -File tools\build.ps1 -Task monitor
-#    pwsh -File tools\build.ps1 -Task menuconfig
-#    pwsh -File tools\build.ps1 -Task fullclean
-#    pwsh -File tools\build.ps1 -Task erase-flash
-#    pwsh -File tools\build.ps1 -Task build -Mirror "D:\esp_build"
-# =============================================================================
+# 功能：
+#   镜像源码到英文目录
+#   自动找到 ESP-IDF
+#   跑 idf.py 编译烧录
+#   带回 sdkconfig
 [CmdletBinding()]
 param(
-    # build | flash | monitor | menuconfig | fullclean | set-target | erase-flash
-    # 可以一次给多个，例如： -Task flash,monitor
+    # 功能：要干几件事
+    # 功能：也能一次给多个
     [string[]]$Task = @('build'),
 
-    # Pure-ASCII directory used as the build mirror when the project path
-    # contains non-ASCII characters.
+    # 功能：英文镜像目录
     [string]$Mirror = 'C:\esp32_smart_home',
 
-    # Explicit ESP-IDF checkout. Auto-detected when omitted.
+    # 功能：手动指定 IDF 路径
     [string]$IdfPath = '',
 
-    # Explicit IDF tools dir (contains python_env/ and tools/). Auto-detected.
+    # 功能：手动指定工具目录
     [string]$ToolsPath = '',
 
-    # Extra args appended to idf.py verbatim.
+    # 功能：额外参数原样传
     [string[]]$ExtraArgs = @()
 )
 
@@ -81,15 +43,11 @@ function Test-Ascii([string]$s) {
     return $true
 }
 
-# -----------------------------------------------------------------------------
-# 0. project root = parent of this script's folder
-# -----------------------------------------------------------------------------
+# 功能：项目根就是脚本上一层
 $projectDir = (Get-Item (Split-Path -Parent $PSScriptRoot)).FullName
 Write-Step "Source project : $projectDir"
 
-# -----------------------------------------------------------------------------
-# 1. decide where we actually build
-# -----------------------------------------------------------------------------
+# 功能：定下在哪儿编译
 $buildRoot = $projectDir
 $usingMirror = $false
 
@@ -109,9 +67,9 @@ if (-not (Test-Ascii $projectDir)) {
     }
 
     Write-Step '1) robocopy source -> mirror (excluding build/, logs)'
-    # /E        recurse incl. empty dirs
-    # /XD build exclude any directory named "build" (keeps the mirror's build cache)
-    # /XF       exclude log files
+    # 功能：连空目录一起拷
+    # 功能：跳过 build 保缓存
+    # 功能：日志文件不拷
     robocopy $projectDir $Mirror /E /XD build /XF build_log.txt build_log_ascii.txt build_log_subst.txt /NFL /NDL /NJH /NJS /NP | Out-Null
     $rc = $LASTEXITCODE
     if ($rc -ge 8) {
@@ -120,7 +78,7 @@ if (-not (Test-Ascii $projectDir)) {
     }
     Write-Ok "sources synced (robocopy exit $rc)"
 
-    # carry menuconfig settings in
+    # 功能：把配置带进镜像
     if (Test-Path (Join-Path $projectDir 'sdkconfig')) {
         Copy-Item (Join-Path $projectDir 'sdkconfig') (Join-Path $Mirror 'sdkconfig') -Force
         Write-Ok 'sdkconfig copied into the mirror'
@@ -132,9 +90,7 @@ if (-not (Test-Ascii $projectDir)) {
     Write-Ok 'Project path is pure ASCII - building in place.'
 }
 
-# -----------------------------------------------------------------------------
-# 2. locate ESP-IDF
-# -----------------------------------------------------------------------------
+# 功能：找一个 IDF 来用
 if (-not $IdfPath) {
     $cand = @()
     if ($env:IDF_PATH) { $cand += $env:IDF_PATH }
@@ -160,9 +116,7 @@ if (-not $IdfPath -or -not (Test-Path (Join-Path $IdfPath 'tools\idf.py'))) {
 }
 Write-Ok "IDF_PATH = $IdfPath"
 
-# -----------------------------------------------------------------------------
-# 3. locate tools dir and activate
-# -----------------------------------------------------------------------------
+# 功能：找工具目录并启用
 if (-not $ToolsPath) {
     if ($env:IDF_TOOLS_PATH -and (Test-Path (Join-Path $env:IDF_TOOLS_PATH 'python_env'))) {
         $ToolsPath = $env:IDF_TOOLS_PATH
@@ -218,43 +172,23 @@ foreach ($c in 'idf.py', 'cmake', 'ninja', 'riscv32-esp-elf-gcc') {
     if ($g) { Write-Ok "$c -> $($g.Source)" } else { Write-Warn "$c not found" }
 }
 
-# -----------------------------------------------------------------------------
-# 4. run idf.py in the build root
-# -----------------------------------------------------------------------------
+# 功能：在编译目录跑命令
 Set-Location $buildRoot
 
-# ccache also chokes on non-ASCII paths, so disable it whenever we are not
-# building in a pure-ASCII tree (i.e. only possible when not mirroring).
+# 功能：中文路径就关编译缓存
 $idfArgs = @()
 if (-not (Test-Ascii $buildRoot)) { $idfArgs += '--no-ccache' }
 $idfArgs += $Task
 if ($ExtraArgs.Count -gt 0) { $idfArgs += $ExtraArgs }
 
-# ---------------------------------------------------------------------------
-# ★ Expand "a,b" elements into separate arguments (2026-09 fix).
-#   WHY: PowerShell's comma syntax `-ExtraArgs '-p','COM31'` builds a STRING
-#   ARRAY whose elements are "-p" and "COM31" -- that part is fine. But when
-#   such an array is splatted into a native executable (`& idf.py @idfArgs`),
-#   Windows PowerShell 5.1 re-joins the elements with a COMMA instead of a
-#   space, so idf.py literally receives the single token "-p,COM31" and dies:
-#         Error: No such option: -p
-#   That is exactly what the old documented flash command hit. Splitting every
-#   element on commas here restores the intended behaviour, so BOTH of these
-#   now work:
-#         -ExtraArgs '-p','COM31'      # comma array
-#         -ExtraArgs '-p','COM31'      # (same thing)
-#         -Task erase-flash,flash      # already split by idf.py's own logic
-#   Note this must run BEFORE the array is splatted, hence the copy below.
-# ---------------------------------------------------------------------------
+# 功能：按逗号拆成两个参数
 $idfArgs = @($idfArgs | ForEach-Object { $_ -split ',' } | Where-Object { $_ -ne '' })
 
 Write-Step "2) idf.py $($idfArgs -join ' ')   (in $buildRoot)"
 & idf.py @idfArgs
 $code = $LASTEXITCODE
 
-# -----------------------------------------------------------------------------
-# 5. copy sdkconfig back so menuconfig changes survive
-# -----------------------------------------------------------------------------
+# 功能：收回配置改动
 if ($usingMirror) {
     $mirrorCfg = Join-Path $Mirror 'sdkconfig'
     if (Test-Path $mirrorCfg) {

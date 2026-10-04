@@ -1,3 +1,24 @@
+# 模块：
+#   本工程的 menuconfig 配置菜单，被 ESP-IDF 在配置阶段读，
+#   改这里 menuconfig 里的选项就跟着变。
+#   分五个子菜单：WiFi、MQTT、蓝牙、应用行为、语音识别来源。
+#
+#   注意：唤醒词模型和命令词模型【不在这里】，在 esp-sr 组件自己的菜单里，
+#   因为那些选项带 prompt，既不能被 select，重复定义同名 config 又有重名风险。
+#   位置是 menuconfig → ESP Speech Recognition：
+#       Load Multiple Wake Words (WakeNet9s)   唤醒词在这里选
+#           本工程选 你好小智 (wn9s_nihaoxiaozhi)
+#       Chinese Speech Commands Model          命令词模型在这里选
+#           本工程选 general chinese recognition (mn7_cn)
+#   sdkconfig.defaults 已经把这几个选项的默认值写好，但只对"首次编译、
+#   还没有 sdkconfig"的工程生效，已经编过的工程请用 menuconfig 确认一次。
+#   换模型后命令词表不用改（命令词是运行时注册的），
+#   但 model 分区大小可能要调，容量算法见 partitions-16MiB.csv。
+#
+# 功能：
+#   定义配置菜单
+#   收集用户选项
+
 menu "智能家居 —— 项目配置"
 
     menu "WiFi 设置"
@@ -178,7 +199,7 @@ menu "智能家居 —— 项目配置"
                   （OLED 显示、MQTT 事件），但【不会出声】。
                   将来要做语音播报，esp-sr 自带中文 TTS，需另加功放+喇叭。
 
-        # ---- 只做"编译期自检"的隐藏符号，没有 prompt（menuconfig 里看不到） ----
+        # 功能：隐藏开关只做自检
         config APP_VOICE_SR_MODEL_CHECK
             bool
             depends on APP_VOICE_SOURCE_ESP_SR
@@ -188,25 +209,7 @@ menu "智能家居 —— 项目配置"
                 CONFIG_SR_MN_* 做一致性检查：一个模型都没选就直接 #error，
                 并告诉你该去哪个菜单选，而不是等烧录后运行时才发现。
 
-        # ★ 唤醒词模型和命令词模型【不在本菜单里】——它们在 esp-sr 组件自己的
-        #   菜单里（那些选项带 prompt，既不能被 select，重复定义同名 config
-        #   又有产生重名符号的风险）。见下面这段注释。
-        #
-        #     menuconfig → ESP Speech Recognition
-        #        ├─ Load Multiple Wake Words (WakeNet9s)     ← 唤醒词在这里选
-        #        │     [*] 你好小智 (wn9s_nihaoxiaozhi)      ★ 本工程选它
-        #        │     [ ] Hi,乐鑫   (wn9s_hilexin)
-        #        │     [ ] Hi,ESP    (wn9s_hiesp)
-        #        ├─ Chinese Speech Commands Model            ← 命令词模型在这里选
-        #        │     [*] general chinese recognition (mn7_cn)   ★ 本工程选它
-        #        ├─ Select noise suppression model
-        #        └─ Select voice activity detection
-        #
-        #   sdkconfig.defaults 里已经把这几个选项的默认值写好了（只对"首次编译、
-        #   还没有 sdkconfig"生效）；已经编译过的工程请用 menuconfig 打开确认一次。
-        #
-        #   ⚠ 换了模型之后：命令词表不用改（命令词是运行时注册的），
-        #     但 model 分区大小可能要调，容量计算见 partitions-16MiB.csv。
+        # 功能：模型在 esp-sr 菜单选
 
     endmenu
 

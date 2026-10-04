@@ -1,15 +1,20 @@
-﻿# =============================================================================
-#  monitor.ps1 -- 通用串口终端（目录页 / 选端口 / 选波特率）
-# =============================================================================
-#   powershell -ExecutionPolicy Bypass -File tools\monitor.ps1          交互菜单
-#   ... -List                            只扫描串口
-#   ... -Port COM31 -Baud 115200          直接连接，跳过菜单
-#   ... -Port COM31 -Seconds 20 -NoEcho   抓 20 秒日志后退出
+﻿# 模块：
+#   串口终端。连上板子看固件日志、敲命令（开机、关灯、问温度），
+#   端口和波特率都能选，输入时按 Tab 能补全，日志同时存成文件。
+#   跟 build.ps1、flash.ps1 配合：那边烧完，这边看输出。
+#   用法：
+#     powershell -ExecutionPolicy Bypass -File tools\monitor.ps1
+#     powershell -ExecutionPolicy Bypass -File tools\monitor.ps1 -List
+#     powershell -ExecutionPolicy Bypass -File tools\monitor.ps1 -Port COM31 -Baud 115200
+#     powershell -ExecutionPolicy Bypass -File tools\monitor.ps1 -Port COM31 -Seconds 20 -NoEcho
+#   连上以后：Ctrl+P 回菜单   Ctrl+L 只看调试台   Ctrl+C 退出
+#   补全那个函数的参数名不敢叫 input：那是自动变量，会变空。
 #
-#  连接后：Ctrl+P 回菜单    Ctrl+L 只看调试台输出    Ctrl+C 退出
-#
-#  ⚠ 本文件必须存为 UTF-8 带 BOM，否则 PowerShell 5.1 按 GBK 解码、中文变乱码。
-# =============================================================================
+# 功能：
+#   选端口和波特率
+#   看板子日志
+#   敲命令给板子
+#   日志存成文件
 #requires -version 5.1
 [CmdletBinding()]
 param(
@@ -38,9 +43,7 @@ try { $script:tty = -not [Console]::IsInputRedirected } catch { $script:tty = $f
 $BaudList    = @(9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600)
 $DefaultBaud = 115200
 
-# ---------------------------------------------------------------------------
-# 命令 / 参数候选表（Tab 补全用）
-# ---------------------------------------------------------------------------
+# 功能：Tab 补全用的候选表
 $CMD_LIST  = @('help','help-voice','status','on','off','toggle','set','color',
                'open','close','auto','cfg','say','log')
 $DEV_LIST  = @('led_living','led_kitchen','led_bedroom','led_bath','fan','window','door','curtain','all')
@@ -93,8 +96,7 @@ function Get-Lcp($items) {
     return $p
 }
 
-# Tab 补全：唯一命中就补全，多个就补公共前缀并把候选列出来
-# ⚠ 参数名不能用 $input —— 那是 PowerShell 自动变量，传进去会变成空
+# 功能：唯一命中就补全
 function Complete-Input([string]$text) {
     $parts   = @($text -split ' ')
     $idx     = $parts.Count - 1
@@ -251,7 +253,7 @@ function Show-Menu {
     Write-Host "=======================================" -ForegroundColor Cyan
 }
 
-# 返回 $true = Ctrl+P 回菜单
+# 功能：真返回就回菜单
 function Run-Monitor {
     $logWriter = $null; $logPath = $null
     if (-not $NoLog) {
@@ -391,9 +393,7 @@ function Run-Monitor {
     return $backToMenu
 }
 
-# =============================================================================
-# 主流程
-# =============================================================================
+# 功能：主流程从这儿走
 $st = Load-State
 if ($st) {
     if ($st.port) { $script:curPort = [string]$st.port }
@@ -405,7 +405,7 @@ if ($List) {
     exit 0
 }
 
-# 指定端口 → 直接连，不走菜单（脚本化用）
+# 功能：指定端口就直接连
 if ($Port) {
     $script:curPort = $Port
     if ($Baud -gt 0) { $script:curBaud = $Baud }
@@ -418,7 +418,7 @@ if ($Port) {
     exit 0
 }
 
-# 非交互（被重定向）→ 直接用记住的端口
+# 功能：无人值守用上次端口
 if (-not $script:tty) {
     if (-not $script:curPort) {
         $p = Scan-Ports

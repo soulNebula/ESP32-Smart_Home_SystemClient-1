@@ -1,3 +1,16 @@
+/*
+ * 模块：
+ *   管状态。界面上看到的东西全从这儿拿；界面按一下，也全叫这儿去发命令。
+ *   自己手里握着 BleManager，板子推上来的包交给 data/Models.kt 解成设备状态、
+ *   传感器读数和阈值，再告诉界面刷新。设备和字段的名字沿用 data/Contract.kt。
+ *
+ * 功能：
+ *   存界面要用的数据
+ *   转发开关命令
+ *   解包更新状态
+ *   记收发日志
+ *   存阈值草稿
+ */
 package com.smarthome.ble
 
 import android.app.Application
@@ -21,24 +34,20 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** One line in the debug log. */
+/* 功能：日志里的一行 */
 data class LogEntry(val id: Long, val time: String, val text: String, val outbound: Boolean)
 
-/**
- * Single source of truth for the UI. Owns the [BleManager] and converts decoded
- * frames into Compose state.
- */
 class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.Listener {
 
     private val ble = BleManager(app.applicationContext)
 
-    // ---- connection ---------------------------------------------------------
+    // 功能：连接情况
     var connection by mutableStateOf(BleConnectionState())
         private set
     var scanResults by mutableStateOf<List<DiscoveredDevice>>(emptyList())
         private set
 
-    // ---- device state -------------------------------------------------------
+    // 功能：设备当前状态
     var state by mutableStateOf(StatePayload())
         private set
     var sensor by mutableStateOf(SensorPayload())
@@ -46,20 +55,20 @@ class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.L
     var autoMode by mutableStateOf<Boolean?>(null)
         private set
 
-    // ---- config -------------------------------------------------------------
+    // 功能：自动模式阈值
     var config by mutableStateOf(ConfigPayload())
         private set
     var configLoadedFromBoard by mutableStateOf(false)
         private set
 
-    // ---- log ----------------------------------------------------------------
+    // 功能：日志列表
     var log by mutableStateOf<List<LogEntry>>(emptyList())
         private set
 
     var lastAck by mutableStateOf<String?>(null)
         private set
 
-    /** Raw text currently sitting in the threshold editor dialog. */
+    // 功能：没发出去的草稿
     var thresholdDraft by mutableStateOf<ConfigPayload?>(null)
         private set
 
@@ -72,8 +81,7 @@ class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.L
         ble.refreshAdapterState()
     }
 
-    // ------------------------------------------------------------- lifecycle --
-
+    // 功能：回到前台再查一次
     fun onResume() = ble.refreshAdapterState()
 
     override fun onCleared() {
@@ -81,8 +89,6 @@ class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.L
         ble.release()
         super.onCleared()
     }
-
-    // -------------------------------------------------------------- commands --
 
     fun startScan() = ble.startScan()
     fun stopScan() = ble.stopScan()
@@ -102,8 +108,7 @@ class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.L
 
     fun setLevel(dev: String, value: Int) {
         ble.send(Proto.Down.CMD, Proto.cmdSet(dev, value))
-        // Do not fake a level change here: the board is the authority and echoes
-        // it back in the next state frame.
+        // 功能：等板子回报再改
     }
 
     fun setColor(dev: String, r: Int, g: Int, b: Int) {
@@ -143,7 +148,7 @@ class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.L
         log = emptyList()
     }
 
-    /** Optimistic UI for pure on/off/toggle so buttons feel instant. */
+    /* 功能：先改界面后等回报 */
     private fun optimisticallyApply(dev: String, action: String, value: Int?) {
         fun flipped(d: DevState, on: Boolean) = d.copy(
             power = on,
@@ -154,7 +159,7 @@ class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.L
             },
         )
         val targets = if (dev == Proto.DEV_ALL) {
-            // "all off" hits every relay; "all on" only lights the 4 lamps + fan.
+            // 功能：全关含门窗帘
             if (action == "on") Proto.LAMPS + Proto.DEV_FAN else Proto.LAMPS + Proto.ACTUATORS + Proto.DEV_FAN
         } else {
             listOf(dev)
@@ -172,8 +177,7 @@ class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.L
         state = state.copy(devices = map)
     }
 
-    // -------------------------------------------------------- BleManager hooks --
-
+    // 功能：接蓝牙那边的回调
     override fun onScanResults(devices: List<DiscoveredDevice>) {
         scanResults = devices
     }
@@ -182,7 +186,7 @@ class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.L
         val prev = connection
         connection = state
         if (state.rssi != null && prev.rssi != state.rssi) {
-            // RSSI already carried in `state`
+            // 功能：信号强度已带上了
         }
         when {
             prev.phase != BlePhase.CONNECTED && state.phase == BlePhase.CONNECTED ->
@@ -192,6 +196,7 @@ class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.L
         }
     }
 
+    /* 功能：按类型码分派处理 */
     override fun onFrame(frame: ByteArray) {
         val decoded = FrameCodec.decode(frame)
         when (decoded) {
@@ -226,7 +231,7 @@ class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.L
 
     override fun onLog(line: String) = addLog(line, line.startsWith("→"))
 
-    /** Records an outbound command in the log (called by the send helpers too). */
+    /* 功能：把发出去的也记上 */
     fun noteOutbound(text: String) = addLog(text, true)
 
     private fun addLog(text: String, outbound: Boolean) {
@@ -236,11 +241,11 @@ class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.L
             text = text,
             outbound = outbound,
         )
-        // Keep the tail bounded so a long session cannot grow without limit.
+        // 功能：只留最近两百条
         log = (log + entry).takeLast(MAX_LOG)
     }
 
-    /** Diagnostics shown in the UI header. */
+    /* 功能：凑顶部那几行信息 */
     fun diagnostics(): List<Pair<String, String>> = buildList {
         add("蓝牙" to if (!connection.adapterAvailable) "无适配器" else if (connection.bluetoothEnabled) "已开启" else "已关闭")
         add("状态" to connection.statusText)
@@ -258,10 +263,10 @@ class SmartHomeViewModel(app: Application) : AndroidViewModel(app), BleManager.L
     }
 }
 
-/** Small helper so the UI can read a device state without null checks. */
+/* 功能：没有就用默认值 */
 fun StatePayload.devOrNull(id: String): DevState = devices[id] ?: DevState()
 
-/** Formats a Double for the sensor panel, returning "--" when unusable. */
+/* 功能：数字留一位小数 */
 fun fmt(v: Double?, digits: Int = 1): String =
     if (v == null || v.isNaN() || v.isInfinite()) {
         "--"
@@ -269,6 +274,6 @@ fun fmt(v: Double?, digits: Int = 1): String =
         String.format(Locale.US, "%.${digits}f", v)
     }
 
-/** Temperature is only shown when the board says it is valid. */
+/* 功能：温度无效就画横线 */
 fun fmtTemp(p: SensorPayload, digits: Int = 1): String =
     if (!p.tempValid || p.temp == null) "--" else String.format(Locale.US, "%.${digits}f", p.temp)

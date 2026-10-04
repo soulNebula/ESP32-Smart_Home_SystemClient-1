@@ -1,8 +1,10 @@
-#  所以本工程实际有 4 个组件：
-#    components/BSP        → BSP        所有硬件驱动（引脚/总线/外设）
-#    components/App        → App        业务逻辑、联动规则、WiFi、MQTT
-#    components/astra_ui   → astra_ui   OLED 菜单框架（C++，含 u8g2 画布 HAL）
-#    components/u8g2       → u8g2       图形库
+# 模块：
+#   工程总入口，被 ESP-IDF 的构建系统读。本工程分四个组件：
+#   BSP 管硬件、App 管业务、astra_ui 管界面、u8g2 是画图库。
+#
+# 功能：
+#   定工程名
+#   加载 IDF
 
 cmake_minimum_required(VERSION 3.16)
 

@@ -1,12 +1,16 @@
-/**
- * @file  mqtt_app.h
- * @brief MQTT 客户端封装（esp-mqtt）—— 对应需求 7：手机 App / 上位机控制
+/*
+ * 模块：
+ *   上网这条链路的口子。给 main.c 调用，具体活儿都在 mqtt_app.c 里干。
+ *   手机走上网和走蓝牙下发的是同一套 JSON，解析命令只有一份：
+ *   声明在 app_cmd.h，实现在 mqtt_app.c，蓝牙那边也调它。
  *
- * 特性：
- *   · 断线自动重连（esp-mqtt 内建）
- *   · LWT 遗嘱消息：设备掉线时 broker 自动发 offline
- *   · 上电后主动上报一次 state + sensor
- *   · 设备状态变化 / 传感器更新都会自动 publish
+ * 功能：
+ *   起服务
+ *   看连上没有
+ *   报状态
+ *   报测量
+ *   报阈值
+ *   回执和事件
  */
 #pragma once
 
@@ -18,31 +22,28 @@
 extern "C" {
 #endif
 
-/** @brief 启动 MQTT 客户端并订阅下行 topic（幂等，非阻塞） */
+/* 功能：起服务，可重复调 */
 esp_err_t mqtt_app_start(void);
 
-/** @brief 是否已连上 broker */
+/* 功能：看连上没有 */
 bool mqtt_is_connected(void);
 
-/** @brief 立即上报一次全设备状态 */
+/* 功能：马上报一遍状态 */
 esp_err_t mqtt_publish_state(void);
 
-/** @brief 立即上报一次传感器数据 */
+/* 功能：马上报一遍测量 */
 esp_err_t mqtt_publish_sensor(const sensor_data_t *d);
 
-/** @brief 上报自动化配置 */
+/* 功能：报一遍联动设置 */
 esp_err_t mqtt_publish_config(void);
 
-/** @brief 上报命令应答："ok"/"err" 附带说明 */
+/* 功能：回一条执行结果 */
 esp_err_t mqtt_publish_ack(const char *what, bool ok, const char *detail);
 
-/** @brief 上报本地事件（按键/语音触发的动作） */
+/* 功能：报按键语音事件 */
 esp_err_t mqtt_publish_event(const char *what);
 
-/**
- * @brief 注册"状态变化 → 自动上报"的钩子
- * @note 由 device_model_init 之后调用；内部会顺带把 automation 的手动保护期接上
- */
+/* 功能：设备一变就自动报 */
 esp_err_t mqtt_app_bind_device_events(void);
 
 #ifdef __cplusplus

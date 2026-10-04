@@ -1,93 +1,58 @@
-/**
- * @file  adc_bus.c
- * @brief ADC1 单次采样 + 校准实现 —— 光敏电阻（GPIO1，ADC1_CH0）/ 雨滴 AO（GPIO2，ADC1_CH1）
+/*
+ * 模块：
+ *   ADC 采集。读光敏电阻和雨滴两路的电压，被 sensor.c、adkey.c 调用；
+ *   因为两个常驻任务都会来读，这里自己加了一把锁防抢，
+ *   向下调 IDF 的采样和校准接口。
  *
- * ============================ 设计要点 ============================
- * 1) 只用 esp_adc 组件的"单次采样"驱动：adc_oneshot_new_unit() +
- *    adc_oneshot_config_channel() + adc_oneshot_read()。
- *    ESP32-S3 上 WiFi 一开 ADC2 就不可用，所以本工程只用 ADC1。
- * 2) 校准优先用曲线拟合（S3 只支持曲线拟合：adc_cali_schemes.h 里
- *    ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED = 1，线拟合的宏在该芯片上
- *    根本没定义，所以绝对不能在代码里引用 line_fitting 的 API）。
- *    eFuse 没烧校准数据时 create 会失败 → 校准句柄置 NULL，并置静态标志
- *    s_cali_valid = false，read_mv 走线性近似兜底，绝不因为没校准就罢工。
- * 3) 幂等：重复调用 adc_bus_init() 直接返回 ESP_OK。
- * 4) 通道 / 衰减 / 位宽全部取自 board_config.h，不出现硬编码。
+ * 功能：
+ *   把采样单元准备好
+ *   读原始值
+ *   读电压毫伏
+ *   多读几次取平均
  */
 #include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
 #include "esp_log.h"
-#include "esp_timer.h"          /* 失败日志限速用 esp_timer_get_time() */
+#include "esp_timer.h"          /* 功能：算时间差限日志 */
 
 #include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"           /* adc_cali_handle_t / adc_cali_raw_to_voltage */
-#include "esp_adc/adc_cali_scheme.h"    /* adc_cali_create_scheme_curve_fitting() + 支持宏 */
+#include "esp_adc/adc_cali.h"           /* 功能：电压换算接口 */
+#include "esp_adc/adc_cali_scheme.h"    /* 功能：校准方式接口 */
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-#include "adc_bus.h"    /* 含 board_config.h */
+#include "adc_bus.h"    /* 功能：含引脚配置 */
 
 static const char *TAG = "ADC_BUS";
 
-/* ===========================================================================
- *  ★ 为什么这里必须自己加一把锁（2026-09-28 实机踩坑记录）
- * ===========================================================================
- * IDF 的 adc_oneshot_read() 内部用的是【非阻塞 try-lock】：
- *
- *     if (adc_lock_try_acquire(handle->unit_id) != ESP_OK) {
- *         return ESP_ERR_TIMEOUT;            // 拿不到锁立刻失败，不等待
- *     }
- *     ...
- *     return valid ? ESP_OK : ESP_ERR_TIMEOUT;
- *
- * 本工程有两个任务共读 ADC1：
- *     · 五位键盘任务   每 10ms 读 CH9（一次 4 个采样，约 400 次/秒）
- *     · 传感器任务     每 1000ms 读 CH0/CH1（一次 16 个采样）
- * 两者撞上时，抢输的一方【整批采样全部失败】，实机日志为证：
- *     E ADC_BUS: all 4 samples failed on channel 9      ← 键盘侧，每分钟十几次
- *     E ADC_BUS: all 16 samples failed on channel 0     ← 光照侧，约每分钟 1~2 次
- *     W SENSOR: 光照 ADC 读取失败，light_mv 保留上次值
- * 键盘任务 100Hz 抢锁，会把 16 连采的传感器饿死（livelock）。
- *
- * 解决办法：在 adc_bus 这一层用【自己的递归互斥锁】把所有 ADC 访问串行化，
- * 让 IDF 那把 try-lock 永远不产生竞争；再加少量重试兜底。
- * =========================================================================== */
-static SemaphoreHandle_t s_adc_mutex = NULL;   /* 递归锁：read_raw/mv/mv_avg 会嵌套调用 */
-#define ADC_READ_RETRY          3              /* 单次采样失败时的重试次数（仅 TIMEOUT 重试） */
+/* 功能：加锁防两个任务抢 */
+static SemaphoreHandle_t s_adc_mutex = NULL;   /* 功能：用可重入的锁 */
+#define ADC_READ_RETRY          3              /* 功能：失败重试三次 */
 
-/* 12bit 满量程原始值 */
+/* 功能：12位满值 */
 #define ADC_RAW_FULL_SCALE      4095
 
-/* 12dB 衰减时 ADC 量程约 0~3100mV（board_config.h 注释里也这么写）。
- * 这是个"兜底"近似：只有在曲线拟合校准不可用时才用得上，
- * 精度大约 ±100mV，对光敏/雨滴这种阈值型判断完全够用。 */
+/* 功能：没校准就用这个估 */
 #define ADC_LINEAR_FULL_SCALE_MV    3100
 
-/* 平均值的采样次数上限：调用方万一传个 100000，不至于把调用任务卡上几秒 */
+/* 功能：平均最多读这么多次 */
 #define ADC_AVG_SAMPLES_MAX     256
 #define ADC_AVG_SAMPLES_DEFAULT 16
 
-/* ------------------------------------------------------------------ */
-/*  单例状态                                                           */
-/* ------------------------------------------------------------------ */
-static adc_oneshot_unit_handle_t s_unit = NULL;     /* ADC1 单次采样单元 */
-static adc_cali_handle_t         s_cali = NULL;     /* 校准句柄，失败为 NULL */
-static bool s_cali_valid = false;                   /* 静态标志：校准是否可用 */
-static bool s_inited = false;                       /* 幂等标志 */
+/* 功能：单例状态 */
+static adc_oneshot_unit_handle_t s_unit = NULL;     /* 功能：采样单元 */
+static adc_cali_handle_t         s_cali = NULL;     /* 功能：校准把手，可能空 */
+static bool s_cali_valid = false;                   /* 功能：校准能不能用 */
+static bool s_inited = false;                       /* 功能：记住已初始化 */
 
-/* ------------------------------------------------------------------ */
-/*  内部函数                                                           */
-/* ------------------------------------------------------------------ */
-
-/** @brief 建 ADC1 单元 + 配两个通道（内部使用，不对外） */
+/* 功能：建单元并配好通道 */
 static esp_err_t adc_bus_setup_unit_and_channels(void)
 {
     if (s_unit == NULL) {
-        /* clk_src 留 0 = 用驱动默认时钟源（adc_oneshot.c 里 0 会走
-         * ADC_DIGI_CLK_SRC_DEFAULT），ulp_mode 必须显式关掉 */
+        /* 功能：时钟源用默认 */
         const adc_oneshot_unit_init_cfg_t unit_cfg = {
             .unit_id = BSP_ADC_UNIT,
             .ulp_mode = ADC_ULP_MODE_DISABLE,
@@ -96,12 +61,7 @@ static esp_err_t adc_bus_setup_unit_and_channels(void)
         esp_err_t err = adc_oneshot_new_unit(&unit_cfg, &s_unit);
         if (err != ESP_OK) {
             s_unit = NULL;
-            /* adc_oneshot_new_unit() 在"单元已被占用"时返回的是
-             * ESP_ERR_NOT_FOUND（源码里的日志是 "adc%d is already in use"），
-             * 部分分支/版本会返回 ESP_ERR_INVALID_STATE，两种都当作
-             * "ADC1 已经初始化过"处理。
-             * 但 IDF 没有公开 API 能取回别人手里的 unit 句柄，所以这里只能
-             * 标记为已初始化、并明确警告读操作会失败。 */
+            /* 功能：被别人先占了 */
             if (err == ESP_ERR_NOT_FOUND || err == ESP_ERR_INVALID_STATE) {
                 ESP_LOGE(TAG, "ADC unit already claimed by another module (%s); "
                               "adc_bus_read_raw/read_mv will fail — 请让其它模块"
@@ -137,14 +97,13 @@ static esp_err_t adc_bus_setup_unit_and_channels(void)
         return err;
     }
 
-    /* GPIO3（ADC1_CH2，strapping 脚，启动后作输入没问题）：预留扩展用 */
+    /* 功能：留一路给扩展 */
     err = adc_oneshot_config_channel(s_unit, ADC_CHANNEL_2, &chan_cfg);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "config CH2 (GPIO3) failed: %s", esp_err_to_name(err));
     }
 
-    /* GPIO10（ADC1_CH9）：外接【五位 AD 键盘】信号，ADKEY 驱动从这里采样。
-     * ★ 注意 IO10 原本是 KEY1 数字按键，现已弃用（BSP_KEY_GPIO_KEY1=NC）。 */
+    /* 功能：五位键盘走这路 */
     err = adc_oneshot_config_channel(s_unit, ADC_CHANNEL_9, &chan_cfg);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "config CH9 (GPIO10) failed: %s", esp_err_to_name(err));
@@ -153,15 +112,14 @@ static esp_err_t adc_bus_setup_unit_and_channels(void)
     return ESP_OK;
 }
 
-/** @brief 建曲线拟合校准句柄；失败不报错，只置 s_cali_valid = false */
+/* 功能：建校准，失败也不报错 */
 static void adc_bus_setup_calibration(void)
 {
     s_cali = NULL;
     s_cali_valid = false;
 
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-    /* S3 不做逐通道补偿，一份句柄覆盖两个通道；chan 只是配置项，
-     * 这里填光敏通道，和官方 oneshot_read 例子写法一致 */
+    /* 功能：一份就够两路用 */
     const adc_cali_curve_fitting_config_t cali_cfg = {
         .unit_id = BSP_ADC_UNIT,
         .chan = BSP_ADC_CH_LIGHT,
@@ -187,18 +145,15 @@ static void adc_bus_setup_calibration(void)
 #endif
 }
 
-/* ------------------------------------------------------------------ */
-/*  对外接口                                                           */
-/* ------------------------------------------------------------------ */
-
+/* 功能：把采样单元准备好 */
 esp_err_t adc_bus_init(void)
 {
-    /* 幂等 */
+    /* 功能：起过就返回 */
     if (s_inited) {
         return ESP_OK;
     }
 
-    /* ★ 先建互斥锁：见文件头"为什么这里必须自己加一把锁" */
+    /* 功能：先把锁建好 */
     if (s_adc_mutex == NULL) {
         s_adc_mutex = xSemaphoreCreateRecursiveMutex();
         if (s_adc_mutex == NULL) {
@@ -215,13 +170,14 @@ esp_err_t adc_bus_init(void)
     adc_bus_setup_calibration();
 
     s_inited = true;
-    /* ADC1 的 CHn 在 S3 上对应 GPIO(n+1)：CH0=GPIO1(光敏) / CH1=GPIO2(雨滴) */
+    /* 功能：通道号对应脚号 */
     ESP_LOGI(TAG, "ADC bus ready (LIGHT=CH%d->GPIO%d / RAIN=CH%d->GPIO%d), 已加互斥锁防多任务抢锁",
              (int)BSP_ADC_CH_LIGHT, (int)BSP_ADC_CH_LIGHT + 1,
              (int)BSP_ADC_CH_RAIN, (int)BSP_ADC_CH_RAIN + 1);
     return ESP_OK;
 }
 
+/* 功能：读一路的原始值 */
 esp_err_t adc_bus_read_raw(adc_channel_t ch, int *out_raw)
 {
     if (out_raw == NULL) {
@@ -232,14 +188,13 @@ esp_err_t adc_bus_read_raw(adc_channel_t ch, int *out_raw)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* 没有锁（极端：init 失败）也要能读，只是退化成旧行为 */
+    /* 功能：没锁也得能读 */
     if (s_adc_mutex != NULL && xSemaphoreTakeRecursive(s_adc_mutex, portMAX_DELAY) != pdTRUE) {
         ESP_LOGE(TAG, "take adc mutex failed");
         return ESP_ERR_TIMEOUT;
     }
 
-    /* 拿到我们自己的锁之后，IDF 内部那把 try-lock 就不该再被别人抢走；
-     * 仍留几次重试，纯粹是兜底（例如驱动内部 timout 抖动）。 */
+    /* 功能：留几次重试兜底 */
     esp_err_t err = ESP_FAIL;
     for (int i = 0; i < ADC_READ_RETRY; i++) {
         *out_raw = 0;
@@ -248,15 +203,15 @@ esp_err_t adc_bus_read_raw(adc_channel_t ch, int *out_raw)
             break;
         }
         if (err != ESP_ERR_TIMEOUT) {
-            break;      /* 非超时错误重试没意义 */
+            break;      /* 功能：别的错不用重试 */
         }
     }
 
-    /* 重试后仍失败：限速打一条带错误码的日志（以前只统计次数，不知道是 TIMEOUT） */
+    /* 功能：还失败就限速报错 */
     if (err != ESP_OK) {
         static int64_t s_last_err_us = 0;
         const int64_t now = esp_timer_get_time();
-        if (now - s_last_err_us > 5000000LL) {     /* 5 秒限速 */
+        if (now - s_last_err_us > 5000000LL) {     /* 功能：五秒报一次 */
             s_last_err_us = now;
             ESP_LOGW(TAG, "adc_oneshot_read(ch%d) 重试 %d 次仍失败: %s",
                      (int)ch, ADC_READ_RETRY, esp_err_to_name(err));
@@ -269,6 +224,7 @@ esp_err_t adc_bus_read_raw(adc_channel_t ch, int *out_raw)
     return err;
 }
 
+/* 功能：读一路的电压 */
 esp_err_t adc_bus_read_mv(adc_channel_t ch, int *out_mv)
 {
     if (out_mv == NULL) {
@@ -278,8 +234,7 @@ esp_err_t adc_bus_read_mv(adc_channel_t ch, int *out_mv)
     int raw = 0;
     esp_err_t err = adc_bus_read_raw(ch, &raw);
     if (err != ESP_OK) {
-        /* 失败原因已经由 adc_bus_read_raw / adc_oneshot_read 打过日志，
-         * 这里只把错误往上抛，避免 while 采样时刷屏 */
+        /* 功能：错已报过不重复 */
         return err;
     }
 
@@ -288,16 +243,17 @@ esp_err_t adc_bus_read_mv(adc_channel_t ch, int *out_mv)
         if (err == ESP_OK) {
             return ESP_OK;
         }
-        /* 校准句柄在但转换失败：不吞错误，降级到线性近似并留日志 */
+        /* 功能：转不了就换估算 */
         ESP_LOGW(TAG, "adc_cali_raw_to_voltage failed (%s), use linear approximation",
                  esp_err_to_name(err));
     }
 
-    /* 线性近似兜底：mV = raw * 3100 / 4095 */
+    /* 功能：按比例估电压 */
     *out_mv = (int)(((int32_t)raw * ADC_LINEAR_FULL_SCALE_MV) / ADC_RAW_FULL_SCALE);
     return ESP_OK;
 }
 
+/* 功能：多读几次取平均 */
 int adc_bus_read_mv_avg(adc_channel_t ch, int samples)
 {
     if (samples <= 0) {
@@ -315,7 +271,7 @@ int adc_bus_read_mv_avg(adc_channel_t ch, int samples)
             sum_mv += mv;
             ok_cnt++;
         }
-        /* 单次失败只跳过，不打断整轮采样 */
+        /* 功能：一次失败就跳过 */
     }
 
     if (ok_cnt == 0) {
@@ -323,6 +279,6 @@ int adc_bus_read_mv_avg(adc_channel_t ch, int samples)
         return -1;
     }
 
-    /* 四舍五入 */
+    /* 功能：四舍五入 */
     return (int)((sum_mv + ok_cnt / 2) / ok_cnt);
 }

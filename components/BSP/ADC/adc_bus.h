@@ -1,8 +1,14 @@
-/**
- * @file  adc_bus.h
- * @brief ADC1 单次采样 + 校准 —— 光敏电阻（GPIO1）/ 雨滴传感器（GPIO2）
+/*
+ * 模块：
+ *   ADC 采集的对外口子。光敏和雨滴两路都从这儿读，
+ *   被 sensor.c 和 adkey.c 调用，具体实现在 adc_bus.c，
+ *   引脚在 board_config.h 里。
  *
- * ESP32-S3 开 WiFi 后 ADC2 不可用，所以本工程只用 ADC1。
+ * 功能：
+ *   起采样单元
+ *   读原始值
+ *   读电压毫伏
+ *   多读几次取平均
  */
 #pragma once
 
@@ -14,20 +20,16 @@
 extern "C" {
 #endif
 
-/** @brief 初始化 ADC1 单次采样单元 + 曲线校准（幂等） */
+/* 功能：起单元和校准 */
 esp_err_t adc_bus_init(void);
 
-/** @brief 读原始值 0~4095（12bit） */
+/* 功能：读原始值 0到4095 */
 esp_err_t adc_bus_read_raw(adc_channel_t ch, int *out_raw);
 
-/** @brief 读校准后的电压，单位 mV */
+/* 功能：读电压毫伏 */
 esp_err_t adc_bus_read_mv(adc_channel_t ch, int *out_mv);
 
-/**
- * @brief 读多次取平均，抗抖动
- * @param samples 采样次数（建议 16~32，太多会拖慢任务）
- * @return 平均 mV；失败返回 -1
- */
+/* 功能：多读几次取平均 */
 int adc_bus_read_mv_avg(adc_channel_t ch, int samples);
 
 #ifdef __cplusplus

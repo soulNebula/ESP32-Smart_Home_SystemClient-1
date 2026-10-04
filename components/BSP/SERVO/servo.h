@@ -1,17 +1,13 @@
-/**
- * @file  servo.h
- * @brief 舵机驱动（窗帘 GPIO15 / 窗户 GPIO16 / 门 GPIO17）
+/*
+ * 模块：
+ *   舵机的对外接口。管窗帘、窗户、门三个位置，被 device_model.c 调用，
+ *   向下用 LEDC 出五十赫兹的舵机信号。转到位会自动松劲，省电也防抖。
  *
- * 用 LEDC 硬件 PWM 产生 50Hz、500~2500us 的舵机信号。
- * 三路共用 LEDC_TIMER_0（50Hz 必须一致），占 3 个通道。
- *
- * 注意：舵机是「位置伺服」，上电后如果持续给信号会一直保持力矩、
- *       发热且耗电。长时间不动时建议调用 servo_detach() 松劲。
- *       ★ 本驱动【不会】自动松劲 —— 否则 servo_set_angle() 就得阻塞等待，
- *         而它会被按键/语音/MQTT 回调直接调用。需要松劲请显式调 servo_detach()。
- *
- * 另注：servo_set_pulse_us() 是纯调试接口，它只改 PWM 脉宽，
- *       不会同步 servo_get_angle() / servo_get_target() 的返回值。
+ * 功能：
+ *   转到指定角度
+ *   可以慢慢转过去
+ *   松劲省电防抖
+ *   慢慢转会等等它
  */
 #pragma once
 
@@ -22,50 +18,46 @@
 extern "C" {
 #endif
 
+/* 功能：三路舵机编号 */
 typedef enum {
-    SERVO_CURTAIN = 0,  /**< 窗帘 GPIO15 */
-    SERVO_WINDOW,       /**< 窗户 GPIO16 */
-    SERVO_DOOR,         /**< 门   GPIO17 */
+    SERVO_CURTAIN = 0,  /* 功能：窗帘那路 */
+    SERVO_WINDOW,       /* 功能：窗户那路 */
+    SERVO_DOOR,         /* 功能：门那路 */
     SERVO_MAX,
 } servo_id_t;
 
-/** @brief 初始化 3 路舵机 PWM（幂等）。会先把所有舵机归到「关闭/复位」角度 */
+/* 功能：把硬件准备好 */
 esp_err_t servo_init(void);
 
-/**
- * @brief 立即转到指定角度
- * @param deg 0~180 度，越界自动钳位
- */
+/* 功能：马上转到指定角度 */
 esp_err_t servo_set_angle(servo_id_t id, float deg);
 
-/**
- * @brief 平滑转动（分步插值），避免舵机"哐"一下甩过去
- * @param ms 总时长；0 等价于立即。内部用 esp_timer 阻塞式延时
- */
+/* 功能：慢慢转别猛甩过去 */
+/* 功能：会卡住当前任务一会 */
 esp_err_t servo_set_angle_smooth(servo_id_t id, float deg, uint32_t ms);
 
-/** @brief 按百分比控制：0 = 全关，100 = 全开（内部线性映射到 0~180°） */
+/* 功能：零是全关百是全开 */
 esp_err_t servo_set_percent(servo_id_t id, uint8_t percent);
 
-/** @brief 当前实际角度（最后设定的值） */
+/* 功能：查现在在哪角度 */
 float servo_get_angle(servo_id_t id);
 
-/** @brief 目标角度（平滑转动过程中与 servo_get_angle 不同） */
+/* 功能：查要去的角度 */
 float servo_get_target(servo_id_t id);
 
-/** @brief 直接给脉宽（调试用），单位 us */
+/* 功能：直接给脉宽调试 */
 esp_err_t servo_set_pulse_us(servo_id_t id, uint32_t us);
 
-/** @brief 停止输出 PWM，舵机松劲（省电、防抖动） */
+/* 功能：松劲省电防抖 */
 esp_err_t servo_detach(servo_id_t id);
 
-/** @brief 恢复 PWM 输出 */
+/* 功能：重新使劲 */
 esp_err_t servo_attach(servo_id_t id);
 
-/** @brief 名称，用于日志 / MQTT / OLED："curtain" / "window" / "door" */
+/* 功能：舵机号换名字 */
 const char *servo_name(servo_id_t id);
 
-/** @brief 由名字反查，找不到返回 SERVO_MAX */
+/* 功能：名字反查舵机号 */
 servo_id_t servo_from_name(const char *name);
 
 #ifdef __cplusplus

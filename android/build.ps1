@@ -1,54 +1,35 @@
-# =============================================================================
-#  android/build.ps1 -- build the SmartHome BLE Android app on Windows
-# =============================================================================
-#  WHY THIS SCRIPT EXISTS
-#  ---------------------------------------------------------------------------
-#  This project lives in a folder whose name contains Chinese characters:
-#      C:\Users\Administrator\Desktop\esp32智能家居_客户\android
-#  Android/Gradle *usually* cope with that, but AGP's aapt2 / lint / R8 have all
-#  historically had trouble with non-ASCII paths and non-ASCII console code
-#  pages. The ESP32 side of this repo solves the same problem by mirroring into
-#  a pure-ASCII directory (see ../tools/run_idf.ps1), and we do the same here:
+﻿# 模块：
+#   打包脚本。在 Windows 上把手机 App 编成能装的 APK。
+#   工程路径里有中文，安卓那套工具容易犯病，所以先把源码整个抄到
+#   一个纯英文目录（默认 C:\smarthome_app）再编，编好了把 APK 拿回来。
+#   原目录照样是正本，只借用镜像目录干活。路径本来就是英文就直接原地编。
+#   用的编译单是 android/build.gradle.kts 和 android/app/build.gradle.kts。
 #
-#      <source, Chinese path>  --robocopy-->  C:\smarthome_app  -->  gradle
-#
-#  The source of truth stays in the project directory. Only the build happens in
-#  the mirror. The resulting APK is copied back into android\apk\.
-#
-#  If the project path is already pure ASCII the script builds in place.
-#
-#  USAGE (Windows PowerShell 5.1 -- pwsh is NOT installed on this machine)
-#  ---------------------------------------------------------------------------
-#    powershell -ExecutionPolicy Bypass -File android\build.ps1
-#    powershell -ExecutionPolicy Bypass -File android\build.ps1 -Task assembleRelease
-#    powershell -ExecutionPolicy Bypass -File android\build.ps1 -Offline
-#    powershell -ExecutionPolicy Bypass -File android\build.ps1 -Mirror "D:\smarthome_app"
-# =============================================================================
+# 功能：
+#   找 JDK
+#   找安卓 SDK
+#   找 Gradle
+#   抄一份到英文目录
+#   开始编译
+#   把 APK 收回来
 [CmdletBinding()]
 param(
-    # Example: -Task assembleDebug
-    # NOTE: declared as a plain [string] on purpose. As a [string[]] parameter,
-    # `-File script.ps1 -Task a,b` receives the single token "a,b" and gradle
-    # then reports "Task 'a,b' not found". Run the script once per task instead.
+    # 功能：编哪个包，默认调试包
     [string]$Task = 'assembleDebug',
 
-    # Pure-ASCII build mirror used when the source path is not pure ASCII.
+    # 功能：纯粹的英文目录
     [string]$Mirror = 'C:\smarthome_app',
 
-    # Pass --offline to gradle (uses the local ~\.gradle cache only).
+    # 功能：只用本地缓存
     [switch]$Offline,
 
-    # Keep a persistent Gradle daemon alive. Default is OFF, because a daemon
-    # inherits the stdout handle of the calling process and never releases it,
-    # which makes any tool that captures this script's output (CI, an agent
-    # harness, `Tee-Object`, ...) wait forever even though the build finished.
-    # Use -Daemon only when running interactively in your own terminal.
+    # 功能：默认不留常驻进程
     [switch]$Daemon,
 
-    # Forward extra arguments to gradle verbatim.
+    # 功能：多出来的参数照传
     [string[]]$ExtraArgs = @(),
 
-    # Force building in the source directory even if the path is non-ASCII.
+    # 功能：就在原地编
     [switch]$InPlace
 )
 
@@ -64,9 +45,7 @@ function Test-Ascii([string]$s) {
     return $true
 }
 
-# -----------------------------------------------------------------------------
-# 1. locate the JDK
-# -----------------------------------------------------------------------------
+# 功能：先找 JDK
 Write-Step 'Locating JDK 21'
 $jbr = 'C:\Program Files\Android\Android Studio\jbr'
 if (Test-Path (Join-Path $jbr 'bin\java.exe')) {
@@ -80,9 +59,7 @@ if (Test-Path (Join-Path $jbr 'bin\java.exe')) {
     Write-Warn "Using java from PATH: $($java.Source)"
 }
 
-# -----------------------------------------------------------------------------
-# 2. locate the Android SDK
-# -----------------------------------------------------------------------------
+# 功能：再找安卓 SDK
 Write-Step 'Locating Android SDK'
 $sdkCandidates = @(
     $env:ANDROID_HOME,
@@ -96,9 +73,7 @@ $env:ANDROID_HOME     = $sdkCandidates[0]
 $env:ANDROID_SDK_ROOT = $sdkCandidates[0]
 Write-Ok "ANDROID_HOME = $($sdkCandidates[0])"
 
-# -----------------------------------------------------------------------------
-# 3. locate gradle (wrapper jar first, then the cached distribution)
-# -----------------------------------------------------------------------------
+# 功能：找编译工具
 Write-Step 'Locating Gradle'
 $src = Split-Path -Parent $MyInvocation.MyCommand.Path
 $gradleCmd = $null
@@ -107,7 +82,7 @@ if ((Test-Path (Join-Path $src 'gradlew.bat')) -and (Test-Path (Join-Path $src '
     $gradleCmd = Join-Path $src 'gradlew.bat'
     Write-Ok "Using wrapper: $gradleCmd"
 } else {
-    # Fall back to the Gradle distribution already unpacked in the user cache.
+    # 功能：本地缓存里翻一个
     $dists = Join-Path $env:USERPROFILE '.gradle\wrapper\dists'
     $found = Get-ChildItem $dists -Directory -ErrorAction SilentlyContinue |
         ForEach-Object { Get-ChildItem $_.FullName -Directory -ErrorAction SilentlyContinue } |
@@ -126,9 +101,7 @@ if (-not $gradleCmd) {
     exit 1
 }
 
-# -----------------------------------------------------------------------------
-# 4. pick the build directory (mirror when the path is not pure ASCII)
-# -----------------------------------------------------------------------------
+# 功能：选在哪儿编
 $buildDir = $src
 $useMirror = (-not $InPlace) -and (-not (Test-Ascii $src))
 
@@ -136,7 +109,7 @@ if ($useMirror) {
     Write-Step "Mirroring source to $Mirror"
     if (-not (Test-Ascii $Mirror)) { Write-Err "Mirror path must be pure ASCII: $Mirror"; exit 1 }
     New-Item -ItemType Directory -Force -Path $Mirror | Out-Null
-    # /MIR keeps the mirror in sync; build outputs live in the mirror only.
+    # 功能：整个抄过去
     robocopy $src $Mirror /MIR /NFL /NDL /NJH /NJS /NP /XD apk build .gradle | Out-Null
     Write-Ok "Mirrored $src -> $Mirror"
     $buildDir = $Mirror
@@ -144,12 +117,9 @@ if ($useMirror) {
     Write-Warn 'Building in place (pure-ASCII path or -InPlace).'
 }
 
-# -----------------------------------------------------------------------------
-# 5. build
-# -----------------------------------------------------------------------------
+# 功能：开始编译
 Write-Step "Gradle $Task"
-# -p (--project-dir) is passed explicitly so the build targets the mirror even
-# if the wrapper script itself lives in the (possibly non-ASCII) source tree.
+# 功能：明确指到镜像目录
 $gradleArgs = @('-p', $buildDir, $Task, '--console=plain', '-Dfile.encoding=UTF-8')
 if (-not $Daemon)                        { $gradleArgs += '--no-daemon' }
 if ($Offline)                            { $gradleArgs += '--offline' }
@@ -162,12 +132,11 @@ Write-Host "  log    $logPath" -ForegroundColor DarkGray
 Push-Location $buildDir
 $code = 0
 if ($Daemon) {
-    # Interactive path: let the daemon own the console.
+    # 功能：留常驻时直接跑
     & $gradleCmd @gradleArgs
     $code = $LASTEXITCODE
 } else {
-    # Redirect to a file rather than a pipe. A surviving child process holding
-    # the write end of a pipe would keep this invocation blocked forever.
+    # 功能：日志写文件别用管道
     & $gradleCmd @gradleArgs *> $logPath
     $code = $LASTEXITCODE
     if (Test-Path $logPath) {
@@ -183,9 +152,7 @@ if ($code -ne 0) {
 }
 Write-Ok "Gradle $Task succeeded"
 
-# -----------------------------------------------------------------------------
-# 6. copy the APK back into <source>\apk
-# -----------------------------------------------------------------------------
+# 功能：把包收回来
 Write-Step 'Collecting APKs'
 $outDir = Join-Path $src 'apk'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null

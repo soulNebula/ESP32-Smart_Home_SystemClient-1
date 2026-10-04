@@ -1,87 +1,17 @@
-/**
- * @file  i2s_mic.c
- * @brief INMP441 I²S 数字麦克风驱动实现（ESP-IDF 5.4 新版 I2S 驱动）
+/*
+ * 模块：
+ *   麦克风采音。INMP441 走 I2S 三根线，不是 I2C，接错线只会一直没声音、
+ *   不会报错；采到的声音给 voice_esp_sr.c 喂语音识别，被 board.c 开机自检
+ *   和 main.c 的串口台调用，自己向下用 IDF 的 I2S 驱动。
  *
- * ===========================================================================
- *  ★★ 接线：INMP441 是 I²S，不是 I²C ★★
- * ===========================================================================
- *  很多人第一眼会把它当 I²C（毕竟本工程 OLED/SHT30/BH1750 都挂 I²C），
- *  于是往 SDA/SCL 上插 —— 结果是"程序不报错、麦克风永远没数据"。
- *  INMP441 的三根信号线是 I²S 的：
- *      SCK(BCLK) 位时钟   → BSP_I2S_MIC_SCK_GPIO  = GPIO13（扩展板左排 IO13）
- *      WS(LRCLK) 帧同步   → BSP_I2S_MIC_WS_GPIO   = GPIO39（扩展板右排 IO39）
- *      SD        串行数据 → BSP_I2S_MIC_SD_GPIO   = GPIO40（扩展板右排 IO40）
- *      L/R       声道选择 → GND（单麦必须固定接一端！悬空=左右乱跳/无声）
- *      VDD                → 3.3V（★ 不是 5V，INMP441 是 3.3V 器件）
- *  I²S 没有从机地址，靠 WS 的高低电平分左右声道，所以三根线【必须全接对】。
- *
- * ===========================================================================
- *  【设计要点】
- * ===========================================================================
- *  1) 用 IDF 5.x 的【新版通用 I2S 驱动】（driver/i2s_std.h）：
- *       i2s_new_channel() → i2s_channel_init_std_mode() → i2s_channel_enable()
- *     不用 IDF 4.x 那套 i2s_driver_install()/i2s_config_t 老 API（5.x 已废弃）。
- *  2) 格式钉死 16KHz / 16bit 单声道 —— 这是 ESP-SR（AFE + WakeNet + MultiNet）
- *     对输入的硬性要求，所以不暴露给调用方，避免上层配错导致"能出声但识别不了"。
- *  3) ESP32-S3 做 I²S 主机：SCK/WS 由 ESP32 产生，麦克风只在自己的 SD 脚上
- *     按节拍吐数据。单麦 + 无回采参考 → 不需要 AEC 的参考通道，RX 单工即可。
- *  4) 缺件只告警不崩：见 i2s_mic_is_ready() 的判据说明。
- *  5) 全程【不用浮点】：本工程可能打开 CONFIG_NEWLIB_NANO_FORMAT，printf 家族
- *     会把 %f 打成空串，而且软件浮点在这里纯属浪费 CPU。
- *     RMS 用整数牛顿迭代开方，dBFS 用 Q8 定点 log2 递推（见下面两个函数）。
- *
- * ===========================================================================
- *  ★ 32bit 时隙 vs 16bit 时隙 —— 两种写法都试过，这里为什么选 32bit
- * ===========================================================================
- *  INMP441 内部是 24bit ADC，输出是"24bit 数据 + 8bit 补零"，即
- *  【在一个 32bit 时隙里高位对齐】，永远是 32 个位时钟一帧。
- *  （另外：上电后前 ~50ms 输出无效数据，属于正常现象，与配置无关。）
- *
- *  写法 A（本驱动采用）：按 I2S_DATA_BIT_WIDTH_32BIT 配，收到 32bit 后
- *      自己右移取高位。优点：与真实时序完全一致，不会因位宽不符产生"半个
- *      采样"错位；缺点：要自己移位 + 处理直流偏置。
- *
- *  写法 B：把位宽直接配成 I2S_DATA_BIT_WIDTH_16BIT。多数情况下 ESP32 的
- *      I²S 外机会自动把 32bit 时隙裁成 16bit 高位给到 DMA，也能出声；但它
- *      依赖"槽位裁剪"行为，某些 IDF 版本/时钟配置下会变成读到低位字节
- *      （结果是巨大的固定噪声、或恒定错误直流值），排错非常困难。
- *      → 所以【不推荐】把 16bit 槽位当成默认，除非你在真机上实测确认信噪比正常。
- *      真要试写法 B：把下面的 I2S_MIC_SLOT_IS_32BIT 改成 0 即可，
- *      同时把 I2S_MIC_RAW_SHIFT 改成 0（16bit 数据已经在 int16 量级里）。
- *
- *  移位量的由来（INMP441 + 写法 A）：
- *      原始 32bit： [ 24bit 有效数据 ][ 8bit 0 ]
- *      >>8        ： [ 24bit 有效数据 ]               ← 得到有符号 24bit
- *      >>6        ： [ 18bit 有效数据 ]               ← 缩到 16bit 量级（留 2bit 余量）
- *      → 一共右移 14 位。留 2bit 余量是有意的：INMP441 满量程不会真打到 24bit
- *        满幅（正常声压级下大约只用到 -20dBFS），右移 14 而不是 16 可以让
- *        有用信号幅度大 4 倍，提高 ESP-SR 的输入信噪比，同时不会削顶。
- *      如果你发现日志里"削顶 N 次"明显增长，把 I2S_MIC_RAW_SHIFT 改成 16。
- *
- * ===========================================================================
- *  ★★ I²S 实际采样率是配置的 2 倍（2026-10-02 实测定位，唤醒词不响的真因）
- * ===========================================================================
- *  症状：唤醒词「你好小智」喊几十遍只偶尔响一次；日志里喂帧速率稳定
- *  199 帧/秒（160 点/帧），而 16KHz 麦克风的物理上限是 100 帧/秒 ——
- *  按累计计数核算，I²S 实际以 ≈32,000 字/秒交付数据。
- *
- *  根因（读 IDF 5.4.4 esp_driver_i2s/i2s_std.c 证实）：
- *      i2s_std_set_slot() 里 `handle->total_slot = 2;` 是【硬编码】的，
- *      与 slot_mode 无关。于是 Philips 模式下每个 WS 周期固定两个 32bit
- *      时隙：bclk = 16000 × 2 × 32 = 1.024MHz，WS = bclk / 64 = 16KHz，
- *      但 DMA 按【时隙速率】= 32,000 字/秒 把两个时隙全部装进缓冲。
- *      INMP441 的 L/R 接 GND 只在左时隙（WS 低）输出，右时隙是悬空/保持
- *      电平 —— 所以流是 [左=麦克风][右=垃圾] 交错，2 个字只有 1 个有效。
- *
- *  后果：把 32000 字/秒当成 16000 采样/秒喂给 ESP-SR，音频时间被拉伸
- *  2 倍（"你好小智"变成慢动作），WakeNet 的特征完全对不上 → 永不触发。
- *  这也能解释早期排错里所有的怪现象（199 帧/秒"达标"、直流偏置异常、
- *  波形不对称）——它们不是三个 bug，是同一个 bug 的三个面。
- *
- *  修法（本驱动）：读【2 倍原始字】，只取偶数下标（左时隙）做抽取，
- *  得到真正的 16KHz 单声道流。单次驱动读上限 = I2S_MIC_RAW_CHUNK/2 有效采样。
- *  这是软件侧修复；硬件侧本来就没有别的接法（INMP441 就是双时隙器件）。
- * ===========================================================================
+ * 功能：
+ *   建通道并打开
+ *   读一段单声道采样
+ *   去掉直流再限幅
+ *   整数算大小和分贝
+ *   判断麦克风在不在
+ *   打印一段波形统计
+ *   读两个字才得一个采样
  */
 #include <inttypes.h>
 #include <stdio.h>
@@ -100,95 +30,69 @@
 
 static const char *TAG = "I2S_MIC";
 
-/* -------------------------------------------------------------------------- */
-/*  参数                                                                       */
-/* -------------------------------------------------------------------------- */
-#define I2S_MIC_SAMPLE_RATE     16000   /* ESP-SR 硬性要求：16KHz */
-#define I2S_MIC_SLOT_IS_32BIT   1       /* 1 = 32bit 时隙读 + 取高位（推荐，见文件头） */
-#define I2S_MIC_RAW_SHIFT       14      /* 32bit 原始值 → int16 的右移位数（见文件头） */
+/* 功能：可调参数 */
+#define I2S_MIC_SAMPLE_RATE     16000   /* 功能：语音识别要这个速率 */
+#define I2S_MIC_SLOT_IS_32BIT   1       /* 功能：按 32 位读再取高位 */
+#define I2S_MIC_RAW_SHIFT       14      /* 功能：右移多少位 */
 
-/* DMA：一帧 240 点 @16KHz = 15ms；4 个缓冲 ≈ 60ms 总延迟，够 AFE 用又不占内存。
- * 为什么不能太小：I²S 是等时流，缓冲太小会在 WiFi/BLE 抢占 CPU 时丢帧，
- * 丢帧会让 AFE 的 VAD/唤醒词丢精度（表现为"喊了没反应"）。 */
+/* 功能：缓冲太小会丢帧 */
 #define I2S_MIC_DMA_DESC_NUM    4
 #define I2S_MIC_DMA_FRAME_NUM   240
 
-/* 判"麦克风在不在"的最小峰峰值（int16 计数）：
- * 没接麦克风 / L-R 悬空 / SCK-WS 接反 → 数据恒定（全 0 或某个固定直流值），
- * 峰峰值 ≈ 0。正常麦克风在【安静房间】里光是底噪峰峰值也有几十~几百。
- * 取 32 是个很保守的门限：高于它就一定不是"恒定直流"。 */
+/* 功能：看波动判断在不在 */
 #define I2S_MIC_ALIVE_PEAK2PEAK_MIN     32
 
-/* 直流偏置的一阶跟踪系数（约 1/256 ≈ 0.4%）：
- * INMP441 的输出直流偏置本身很小（几十个计数），但个别模块/供电不稳时能到
- * 几百。跟得太快会把低频语音一起滤掉（语音基频可低到 80Hz），跟得太慢又会
- * 让直流残留进 AFE。1/256 在 16KHz 下对应约 0.26Hz 截止，安全。 */
+/* 功能：慢慢跟住直流偏置 */
 #define I2S_MIC_DC_IIR_SHIFT    8
 
-/* i2s_channel_read 单次最长等待（毫秒），防止调用方传个天荒地老 */
+/* 功能：一次最多等这么久 */
 #define I2S_MIC_READ_TIMEOUT_MS_MAX 2000
 
-/* 一次最多处理的采样点数（中转缓冲大小）。
- * ★ 注意单位是【原始 32bit 字】：每个 WS 周期有左右两个时隙，
- *   驱动读回来的是双时隙流，2 个字才能抽 1 个有效采样（见文件头"2x"一节），
- *   所以单次驱动读最多换算 I2S_MIC_RAW_CHUNK/2 个有效采样。 */
+/* 功能：一次最多读这么多字 */
 #define I2S_MIC_RAW_CHUNK       512
 
-/* -------------------------------------------------------------------------- */
-/*  内部状态                                                                   */
-/* -------------------------------------------------------------------------- */
+/* 功能：内部状态变量 */
 static i2s_chan_handle_t s_rx_chan = NULL;
 static bool              s_inited  = false;
 
-/** 直流偏置跟踪值（int32，避免累加溢出） */
+/* 功能：跟住直流偏置 */
 static int32_t s_dc_est = 0;
 
-/** 最近一次读取的电平快照（i2s_mic_read 写，i2s_mic_read_level 读） */
+/* 功能：最近一次的电平快照 */
 static i2s_mic_level_t s_level;
 
-/** 32bit 原始样本中转缓冲 */
+/* 功能：原始样本中转缓冲 */
 static int32_t s_raw[I2S_MIC_RAW_CHUNK];
 
-/* -------------------------------------------------------------------------- */
-/*  整数数学：RMS 开方 + Q8 定点 log2（全程不用浮点，见文件头第 5 条）        */
-/* -------------------------------------------------------------------------- */
-
-/** @brief 整数平方根（牛顿迭代），x < 0 时返回 0 */
+/* 功能：整数开平方 */
 static uint32_t isqrt_u32(uint32_t x)
 {
     if (x == 0) {
         return 0;
     }
-    /* 初值取 2 的整数次幂上界，牛顿迭代 4~5 次就收敛到整数精度 */
-    uint32_t r = 1u << 16;              /* 最大支持 x < 2^32 */
+    /* 功能：先猜个大数再逼近 */
+    uint32_t r = 1u << 16;              /* 功能：从最大数往下试 */
     while (r > 0 && r > x / r) {
         r >>= 1;
     }
-    /* 此时 r ≈ sqrt(x) 的粗值；再做几轮牛顿迭代 */
+    /* 功能：再迭代几轮算准 */
     for (int i = 0; i < 6; i++) {
         if (r == 0) {
             break;
         }
         r = (r + x / r) / 2;
     }
-    /* 修正 ±1 的余差 */
+    /* 功能：修掉最后一点误差 */
     while (r > 0 && r > x / r) { r--; }
     while ((r + 1) <= x / (r + 1)) { r++; }
     return r;
 }
 
-/**
- * @brief 以 2 为底的对数，Q8 定点（返回值 = log2(v) * 256）
- * @param v 必须 > 0
- *
- * 递推原理：把 v 归一化到 [1,2)，整数部分就是右移次数；
- * 小数部分每轮平方一次取整数位，得到 1 个二进制小数位（共 8 位）。
- * 整数实现的好处：不需要 libm、不受 NANO_FORMAT 影响、速度稳定。
- */
+/* 功能：整数算对数 */
 static int32_t log2_q8(uint32_t v)
 {
     if (v == 0) {
-        return INT32_MIN;       /* 调用方已对 0 做过特判 */
+        return INT32_MIN;       /* 功能：零上面已经挡过 */
     }
 
     int32_t e = 0;
@@ -197,10 +101,10 @@ static int32_t log2_q8(uint32_t v)
         e++;
     }
 
-    uint32_t m = v;             /* m ∈ [1,2)，用 Q16 表示：实际值 = m / 65536 */
+    uint32_t m = v;             /* 功能：把数归到一到二之间 */
     int32_t frac = 0;
     for (int i = 0; i < 8; i++) {
-        m = (m * m) >> 16;      /* 平方后 m ∈ [1,4) */
+        m = (m * m) >> 16;      /* 功能：平方一次取一位 */
         frac <<= 1;
         if (m >= 2u * 65536u) {
             m >>= 1;
@@ -210,11 +114,7 @@ static int32_t log2_q8(uint32_t v)
     return (e << 8) + frac;
 }
 
-/* -------------------------------------------------------------------------- */
-/*  内部函数                                                                   */
-/* -------------------------------------------------------------------------- */
-
-/** 单趟统计上下文（避免函数参数长到看不清） */
+/* 功能：一趟采样的统计本 */
 typedef struct {
     int32_t min;
     int32_t max;
@@ -224,6 +124,7 @@ typedef struct {
     size_t  clip;
 } mic_stat_t;
 
+/* 功能：把统计清零 */
 static void mic_stat_reset(mic_stat_t *st)
 {
     st->min    = INT32_MAX;
@@ -234,25 +135,18 @@ static void mic_stat_reset(mic_stat_t *st)
     st->clip   = 0;
 }
 
-/**
- * @brief 把 32bit 原始样本转成 int16（含直流偏置补偿），同时累计统计量
- * @param out 可为 NULL（只统计不输出）
- */
+/* 功能：转成十六位并记账 */
 static void i2s_mic_accumulate(const int32_t *raw, size_t n, mic_stat_t *st, int16_t *out)
 {
     for (size_t i = 0; i < n; i++) {
-        /* 1) 取高位得到 int16 量级（见文件头"移位量的由来"） */
+        /* 功能：右移取高位 */
         int32_t v = (int32_t)(raw[i] >> I2S_MIC_RAW_SHIFT);
 
-        /* 2) 慢速跟踪直流偏置并减掉 —— 不让直流吃掉 AFE 的动态范围。
-         * ★ 必须【四舍五入】而不是直接 >>：C 的算术右移对负数向下取整，
-         *   每步平均多减一点点，跟踪器被缓慢拽向负值，最后给输出整体
-         *   抬高一个假直流（真机实测：输出平均 +135，min 几乎全为正）。
-         *   +128 再 >> 就是 round-to-nearest，正负差值都能对称修正。 */
+        /* 功能：减直流，别向下取整 */
         s_dc_est += (v - s_dc_est + (1 << (I2S_MIC_DC_IIR_SHIFT - 1))) >> I2S_MIC_DC_IIR_SHIFT;
         v -= s_dc_est;
 
-        /* 3) 限幅（防止极端情况下溢出 int16 后翻转成反向大噪声） */
+        /* 功能：太大就削平防溢出 */
         if (v > I2S_MIC_FULL_SCALE) {
             v = I2S_MIC_FULL_SCALE;
             st->clip++;
@@ -275,11 +169,11 @@ static void i2s_mic_accumulate(const int32_t *raw, size_t n, mic_stat_t *st, int
     }
 }
 
-/** @brief 由统计量算出 RMS / dBFS / 峰峰值并写入 s_level */
+/* 功能：算大小和分贝 */
 static void i2s_mic_level_update(const mic_stat_t *st, size_t samples)
 {
     if (samples == 0) {
-        /* 一点都没读到：只累加计数，不改电平（保留上一次的值供诊断） */
+        /* 功能：没读到就只记次数 */
         s_level.read_count++;
         return;
     }
@@ -294,38 +188,31 @@ static void i2s_mic_level_update(const mic_stat_t *st, size_t samples)
     s_level.clip         = (uint32_t)st->clip;
     s_level.read_count++;
 
-    /* dBFS = 20*log10(peak / 32768) = 6.0206 * log2(peak / 32768)
-     * log2(x) 用 Q8 定点算，再乘 6.0206/32768*256*10 ≈ 0.4705 → 用 47/100 近似，
-     * 结果就是 dBFS × 10 的整数（例如 -420 = -42.0 dBFS）。
-     * 峰值为 0（无信号）→ 写成 -9990 这个哨兵值，打印时一眼能认出来。 */
+    /* 功能：把峰值折成分贝 */
     if (st->peak > 0) {
         const int32_t l2_peak    = log2_q8((uint32_t)st->peak);
-        const int32_t l2_fs      = log2_q8(32768u);          /* = 15 * 256 = 3840 */
-        const int32_t diff_q8    = l2_peak - l2_fs;          /* 负数（peak < 满量程） */
+        const int32_t l2_fs      = log2_q8(32768u);          /* 功能：满量程的对数值 */
+        const int32_t diff_q8    = l2_peak - l2_fs;          /* 功能：比满量程小就是负 */
         s_level.db_x10 = (int)((diff_q8 * 47) / 100);
     } else {
         s_level.db_x10 = -9990;
     }
 }
 
-/* -------------------------------------------------------------------------- */
-/*  对外接口                                                                   */
-/* -------------------------------------------------------------------------- */
+/* 功能：把麦克风通道打开 */
 esp_err_t i2s_mic_init(void)
 {
-    /* 幂等：重复调用直接返回，不会重装驱动 */
+    /* 功能：开过就不再重开 */
     if (s_inited) {
         return ESP_OK;
     }
 
-    /* ---- 1. 建 I²S 通道（只用 RX：单麦，不需要回采参考通道） ----
-     * I2S_NUM_AUTO 让 IDF 自己挑一个空闲控制器（本工程没有别的 I²S 外设）。 */
+    /* 功能：建一个只收的通道 */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
-    /* 宏展开后 dma_desc_num=6 / dma_frame_num=240，这里按语音场景重设描述符数：
-     * 4 个缓冲 ≈ 60ms 总延迟，比默认更省内存、延迟更低。 */
+    /* 功能：缓冲少一点省内存 */
     chan_cfg.dma_desc_num  = I2S_MIC_DMA_DESC_NUM;
     chan_cfg.dma_frame_num = I2S_MIC_DMA_FRAME_NUM;
-    chan_cfg.auto_clear    = true;   /* 没数据时填 0，而不是重复上一次的旧数据 */
+    chan_cfg.auto_clear    = true;   /* 功能：没数据就填零 */
 
     esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &s_rx_chan);
     if (err != ESP_OK) {
@@ -335,7 +222,7 @@ esp_err_t i2s_mic_init(void)
         return err;
     }
 
-    /* ---- 2. 配标准（Philips）模式：16KHz / 单声道 ---- */
+    /* 功能：配成单声道十六千赫 */
 #if I2S_MIC_SLOT_IS_32BIT
     const i2s_data_bit_width_t slot_bits = I2S_DATA_BIT_WIDTH_32BIT;
 #else
@@ -346,11 +233,11 @@ esp_err_t i2s_mic_init(void)
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(I2S_MIC_SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(slot_bits, I2S_SLOT_MODE_MONO),
         .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,            /* INMP441 不需要 MCLK */
-            .bclk = BSP_I2S_MIC_SCK_GPIO,       /* SCK / 位时钟 */
-            .ws   = BSP_I2S_MIC_WS_GPIO,        /* WS  / 帧同步 */
-            .dout = I2S_GPIO_UNUSED,            /* 只收不发 */
-            .din  = BSP_I2S_MIC_SD_GPIO,        /* SD  / 麦克风数据 */
+            .mclk = I2S_GPIO_UNUSED,            /* 功能：它不用主时钟 */
+            .bclk = BSP_I2S_MIC_SCK_GPIO,       /* 功能：位时钟脚 */
+            .ws   = BSP_I2S_MIC_WS_GPIO,        /* 功能：声道同步脚 */
+            .dout = I2S_GPIO_UNUSED,            /* 功能：只收不发 */
+            .din  = BSP_I2S_MIC_SD_GPIO,        /* 功能：数据线 */
             .invert_flags = {
                 .mclk_inv = false,
                 .bclk_inv = false,
@@ -367,10 +254,8 @@ esp_err_t i2s_mic_init(void)
         return err;
     }
 
-    /* ---- 3. 使能通道：使能后 SCK/WS 立即开始输出，麦克风同时开始吐数据 ----
-     * ⚠ INMP441 上电后前 ~50ms 的输出是无效的（内部滤波器未收敛），
-     *   这段时间读到的是垃圾值。ESP-SR 的 AFE 有自己的启动丢弃逻辑，
-     *   所以这里不用特别处理，只是记一笔免得以后当成 bug 排查。 */
+    /* 功能：开了它才吐数据 */
+    /* 功能：头五十毫秒是垃圾 */
     err = i2s_channel_enable(s_rx_chan);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2s_channel_enable failed: %s", esp_err_to_name(err));
@@ -391,6 +276,7 @@ esp_err_t i2s_mic_init(void)
     return ESP_OK;
 }
 
+/* 功能：读一段单声道采样 */
 esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t timeout_ms)
 {
     if (out_read != NULL) {
@@ -406,8 +292,7 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
         timeout_ms = I2S_MIC_READ_TIMEOUT_MS_MAX;
     }
 
-    /* 总的超时预算：切成若干段读，每段只给"剩下的预算"，避免"每段都给满超时"
-     * 导致实际等待时间被放大 N 倍。 */
+    /* 功能：超时按总预算切段 */
     const int64_t t_start   = esp_timer_get_time();
     const int64_t budget_us = (int64_t)timeout_ms * 1000LL;
 
@@ -418,22 +303,21 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
     esp_err_t err = ESP_OK;
 
     while (got < samples) {
-        /* ★ 每次驱动读要 2 倍原始字：一个 WS 周期含左右两个 32bit 时隙，
-         *   抽取后只剩一半（见文件头"★ I²S 实际采样率是配置的 2 倍"一节） */
+        /* 功能：一次读两倍字再抽 */
         size_t want = samples - got;
         if (want > I2S_MIC_RAW_CHUNK / 2) {
             want = I2S_MIC_RAW_CHUNK / 2;
         }
-        const size_t want_raw = want * 2;   /* 原始字 = 2 × 有效采样 */
+        const size_t want_raw = want * 2;   /* 功能：字数是采样两倍 */
 
-        TickType_t wait_ticks = 0;      /* 0 = 不等待（非阻塞） */
+        TickType_t wait_ticks = 0;      /* 功能：零就是不等待 */
         if (budget_us > 0) {
             const int64_t left_us = budget_us - (esp_timer_get_time() - t_start);
             if (left_us <= 0) {
                 err = ESP_ERR_TIMEOUT;
                 break;
             }
-            /* 向上取整到 1 tick，避免 left_us < 1 tick 时退化成"不等待" */
+            /* 功能：至少等一拍 */
             wait_ticks = pdMS_TO_TICKS((uint32_t)((left_us + 999) / 1000));
             if (wait_ticks == 0) {
                 wait_ticks = 1;
@@ -443,7 +327,7 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
         size_t bytes_read = 0;
         err = i2s_channel_read(s_rx_chan, s_raw, want_raw * sizeof(int32_t), &bytes_read, wait_ticks);
         if (err != ESP_OK) {
-            /* 超时 = "麦克风没数据/没接"的正常表现，不当错误刷屏，往上抛由调用方处理 */
+            /* 功能：超时不算错，往上抛 */
             break;
         }
 
@@ -453,13 +337,7 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
             break;
         }
 
-        /* ★ 抽取麦克风时隙（偶数下标）★
-         * 2026-10-02 实测（两次烧录对照）：
-         *   · 偶数下标：底噪 ±120、峰峰值 200+，是【有信号】的时隙（麦克风）；
-         *   · 奇数下标：恒定 ~0（峰峰值 3），是悬空时隙（SD 脚无驱动）。
-         * 中间一度误判奇偶反转（把"说话时电平低"归因于时隙取反），翻转后
-         * mic 自检直接报"没采到音频"，翻回偶数恢复。真正的"说话电平低"
-         * 是当时的测试距离问题。原地压缩后统一走 accumulate。 */
+        /* 功能：只留麦克风那半时隙 */
         size_t nd = 0;
         for (size_t i = 0; i + 1 < n; i += 2) {
             s_raw[nd++] = s_raw[i];
@@ -476,7 +354,7 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
     i2s_mic_level_update(&st, got);
 
     if (got > 0 && st.clip > 0) {
-        /* 削顶限速打日志：说明移位量偏大或音量过大，日志里给出调整依据 */
+        /* 功能：削顶多了就提醒 */
         static int64_t s_last_clip_log_us = 0;
         const int64_t now = esp_timer_get_time();
         if (now - s_last_clip_log_us > 5000000LL) {
@@ -492,7 +370,7 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
         *out_read = got;
     }
 
-    /* 读满了就不算错（即使中途出现过一次超时重试） */
+    /* 功能：读满就算成功 */
     if (got == samples) {
         return ESP_OK;
     }
@@ -504,28 +382,24 @@ void i2s_mic_read_level(i2s_mic_level_t *out)
     if (out == NULL) {
         return;
     }
-    /* 结构里全是标量，32 位对齐读写在 ESP32-S3 上是原子的；
-     * 这里只求"快照大致一致"，不追求跨字段严格一致，所以不加锁。 */
+    /* 功能：不加锁，快照够用 */
     *out = s_level;
 }
 
+/* 功能：看麦克风在不在 */
 bool i2s_mic_is_ready(void)
 {
     if (!s_inited || s_rx_chan == NULL) {
         return false;
     }
     if (s_level.read_count == 0) {
-        return false;       /* 还一次都没读到过数据 */
+        return false;       /* 功能：一次都没读到 */
     }
-    /* ★ 判据用【峰峰值】而不是 RMS，也不是原始直流：
-     *   · 麦克风完全没接（SD 悬空被拉低）→ 全 0 → 峰峰值 = 0
-     *   · L/R 悬空 / SCK-WS 接反 → 读回来是恒定直流 → 直流被 s_dc_est 减掉后
-     *     波动量 ≈ 0 → 峰峰值也接近 0（哪怕原始直流很大）
-     *   · 正常工作的麦克风 → 光是底噪就有几十~几百的波动 → 峰峰值明显超门限
-     * 所以 peak_to_peak > I2S_MIC_ALIVE_PEAK2PEAK_MIN 是"真的在拾音"的有力证据。 */
+    /* 功能：看波动大小判断 */
     return (s_level.peak_to_peak > I2S_MIC_ALIVE_PEAK2PEAK_MIN);
 }
 
+/* 功能：采一段打印统计 */
 void i2s_mic_dump(int seconds)
 {
     if (!s_inited || s_rx_chan == NULL) {
@@ -540,7 +414,7 @@ void i2s_mic_dump(int seconds)
     printf("  [mic] 判据：安静时 rms 几十~几百 且 min/max 在动 = 麦在工作；\n");
     printf("  [mic]       整行全 0 = 没接；min=max 恒定 = 时序/声道接错\n");
 
-    const size_t chunk = 8000;      /* 500ms @16KHz */
+    const size_t chunk = 8000;      /* 功能：这是半秒的点数 */
     int16_t *buf = (int16_t *)malloc(chunk * sizeof(int16_t));
     if (buf == NULL) {
         printf("  [mic] 内存不足，dump 取消\n");

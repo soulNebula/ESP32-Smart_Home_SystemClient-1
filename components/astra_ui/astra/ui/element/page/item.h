@@ -1,6 +1,13 @@
-//
-// Created by Fir on 2024/1/21.
-//
+/*
+ * 模块：
+ *   界面的零件库。页面、选中框、画面镜头这些零件都在这儿，被
+ *   launcher.cpp、item.cpp 和 astra_rocket.cpp 用，向下调 hal 画屏。
+ *
+ * 功能：
+ *   组页面和零件
+ *   算每行的位置
+ *   做动画和模糊
+ */
 
 #pragma once
 #ifndef ASTRA_ASTRA__H
@@ -15,6 +22,7 @@
 
 namespace astra {
 
+/* 功能：零件基类 */
 class Item {
 protected:
   sys::config systemConfig;
@@ -23,6 +31,7 @@ protected:
   void updateConfig();
 };
 
+/* 功能：动画基类 */
 class Animation {
 public:
   virtual void entryAnimation();
@@ -33,7 +42,7 @@ public:
 
 inline void Animation::entryAnimation() { }
 
-//todo 未实现功能
+/* 功能：退场时闪一下屏 */
 inline void Animation::exitAnimation() {
   static uint8_t fadeFlag = 1;
   static uint8_t bufferLen = 8 * HAL::getBufferTileHeight() * HAL::getBufferTileWidth();
@@ -56,7 +65,7 @@ inline void Animation::exitAnimation() {
         for (uint16_t i = 0; i < bufferLen; ++i) if (i % 2 == 0) bufferPointer[i] = bufferPointer[i] & 0x00;
         break;
       default:
-        //放动画结束退出函数的代码
+        /* 功能：动画收尾 */
         fadeFlag = 0;
         break;
     }
@@ -90,37 +99,33 @@ inline void Animation::blur() {
 
 inline void Animation::animation(float *_pos, float _posTrg, float _speed) {
   if (*_pos != _posTrg) {
-    // ESP32 移植：吸附阈值 0.15 → 1.0px。几何收敛尾部在低帧率下拖行数百帧，
-    // 1px 以内人眼不可辨，提前吸附可大幅缩短动画尾程
+    /* 功能：差不到一像素就到位 */
     if (std::fabs(*_pos - _posTrg) < 1.0f) *_pos = _posTrg;
     else *_pos += (_posTrg - *_pos) / ((100 - _speed) / 1.0f);
   }
 }
 
-//todo 实现之前提到过的那个进场和退场动画的idea
+/* 功能：菜单页基类 */
 class Menu : public Item, public Animation {
 public:
-  //存储其在父页面中的位置
-  //list中就是每一项对应的坐标 tile中就是每一个图片的坐标
+  /* 功能：在父页里的位置 */
   typedef struct Position {
-    //这里的坐标都是左上角的坐标 但是要记住绘制文字的时候是左下角的坐标 需要再减去字体的高度
+    /* 功能：坐标都取左上角 */
     float x, xTrg;
     float y, yTrg;
   } Position;
 
   Position position{};
 
-  //前景元素的坐标
+  /* 功能：前景元素坐标 */
   typedef struct PositionForeground {
-    float hBar, hBarTrg;  //进度条高度 通用
-    float wBar, wBarTrg;  //进度条宽度 通用
-    float xBar, xBarTrg;  //进度条x坐标 通用
-    float yBar, yBarTrg;  //进度条y坐标 通用
+    float hBar, hBarTrg;  /* 功能：进度条高度 */
+    float wBar, wBarTrg;  /* 功能：进度条宽度 */
+    float xBar, xBarTrg;  /* 功能：进度条横坐标 */
+    float yBar, yBarTrg;  /* 功能：进度条纵坐标 */
 
-    /*TILE*/
     float yArrow, yArrowTrg;
     float yDottedLine, yDottedLineTrg;
-    /*TILE*/
   } PositionForeground;
 
   PositionForeground positionForeground{};
@@ -134,105 +139,85 @@ public:
   } PageType;
 
   PageType selfType;
-  PageType childType; //在add第一个元素的时候确定 之后不可更改 只能加入相同类型的元素
+  PageType childType; /* 功能：第一次加元素时定死 */
 
 public:
   Menu *parent;
   std::vector<Menu *> child;
   uint8_t selectIndex;
 
-  // ESP32 移植：列表绘制上界（页顶栏高度）。行内容/选择框绘制位置
-  // 越过此界（含滚动动画过程中）一律不画——带顶栏的页面用，
-  // 保证"顶栏下第一行是初始位置，滚动永不越界"；0=不裁剪（无顶栏页面）
+  /* 功能：顶栏以下的才画 */
   float clipTop = 0;
 
-  // ESP32 移植：不渲染选择框的页面（主页面时钟等自定义渲染页）
+  /* 功能：这页不画选中框 */
   bool hideSelector = false;
 
-  // ESP32 移植：允许打开 0 子项的页面（空态页面，如 0 架时的无人机列表）。
-  // 默认拒绝：叶子行（无子页）打开后 Menu::render 对 getItemNum()=0
-  // 除零 → inf 坐标绘制死循环 → 看门狗复位（快速按键误触的主要崩溃源）
+  /* 功能：空页面也允许打开 */
   bool openableWhenEmpty = false;
 
-  virtual ~Menu() = default;  /* ESP32 移植：Selector::destroy 经基类指针 delete */
+  virtual ~Menu() = default;  /* 功能：删页面走这里 */
 
   explicit Menu(std::string _title);
   Menu(std::string _title, std::vector<uint8_t> _pic);
 
-  void init(std::vector<float> _camera); //每次打开页面都要调用一次
-  void deInit(); //每次关闭页面都要调用一次
+  void init(std::vector<float> _camera); /* 功能：开页面时调一次 */
+  void deInit(); /* 功能：关页面时调一次 */
 
-  // ESP32 移植：render 虚化，允许业务层（astra_rocket）派生页面类
-  // 定制空列表状态/顶部标题栏等特殊渲染
-  virtual void render(std::vector<float> _camera);  //render all child item.
+  /* 功能：子类可自己重写画法 */
+  virtual void render(std::vector<float> _camera);  /* 功能：把整页画出来 */
 
-  // ESP32 移植：页面级 OK 键处理。返回 true 表示页面已自行处理，
-  // Launcher 不再执行 open() 导航（日志页按 OK 开关热点等特殊交互页用）。
-  // 默认 false：所有既有页面行为不变
+  /* 功能：页面自己处理 OK 键 */
   virtual bool onOkKey() { return false; }
 
-  // ESP32 移植：页面级 LEFT/RIGHT 键处理。onLeftKey 返回 true 表示页面
-  // 已自行处理，Launcher 不执行 close()（统计页锁定占比行编辑态用）；
-  // onRightKey 返回值忽略（Launcher 本就不使用 RIGHT）。
-  // 默认空实现：所有既有页面行为不变
+  /* 功能：页面自己处理左右键 */
   virtual bool onLeftKey() { return false; }
   virtual bool onRightKey() { return false; }
 
-  // ESP32 移植：页面级进入/离开回调。Launcher 在 open()/close()/openTarget()
-  // 成功切换页面后调用（旧页 onExit，新页 onEnter）。默认空实现，
-  // 所有既有页面行为不变（蓝牙遥测页用其启停 BLE 外设）
+  /* 功能：进出页面时通知一声 */
   virtual void onEnter() {}
   virtual void onExit() {}
 
   [[nodiscard]] uint8_t getItemNum() const;
   [[nodiscard]] Position getItemPosition(uint8_t _index) const;
-  [[nodiscard]] Menu* getNext() const;  //启动器调用该方法来获取下一个页面
+  [[nodiscard]] Menu* getNext() const;  /* 功能：取下一个页面 */
   [[nodiscard]] Menu* getPreview() const;
 
-  //selector是启动器中修改的
+  /* 功能：选中项由启动器改 */
 
+  /* 功能：往页面加一行 */
   bool addItem(Menu* _page);
 };
 
+/* 功能：选中框 */
 class Selector : public Item, public Animation {
 private:
   Menu* menu;
 
 public:
-  //列表页中就是选择框的坐标 磁贴页中就是大框的坐标
+  /* 功能：选中框的坐标 */
   float x, xTrg;
   float y, yTrg;
 
-  /*LIST*/
   float w, wTrg;
   float h, hTrg;
-  /*LIST*/
 
-  /*TILE*/
-  float yText, yTextTrg;  //磁贴页标题坐标
-  /*TILE*/
+  float yText, yTextTrg;  /* 功能：磁贴标题纵坐标 */
 
   Selector() = default;
-  //最牛逼的来了 在磁贴中 文字和大框就是selector
-  //这样就可以弄磁贴的文字出现动画了
-  ////todo 在磁贴中 选择的时候 摄像机和selector都要移动 磁贴的selector是一个空心方框 + 底部的字体
+  /* 功能：磁贴的框和字一起动 */
 
   std::vector<float> getPosition();
 
   void go(uint8_t _index);
 
-  bool inject(Menu* _menu); //inject menu instance to prepare for render.
-  bool destroy(); //destroy menu instance.
+  bool inject(Menu* _menu); /* 功能：接上要画的页面 */
+  bool destroy(); /* 功能：把页面删掉 */
 
   void render(std::vector<float> _camera);
 };
 
-//加入了摄像机 随着摄像机动而动
-//其他的不动的元素 比如虚线和进度条 统称为前景 不受摄像机的控制
-//这样一来元素本身的坐标并不会改变 只是在渲染的时候加入了摄像机的坐标而已
-
-//磁贴类中 前景是虚线 标题 箭头和按钮图标 摄像机横向移动
-//列表类中 前景是进度条 摄像机纵向移动
+/* 功能：镜头动，前景不动 */
+/* 功能：画面镜头 */
 class Camera : public Item, public Animation {
 private:
   float xInit, yInit;
@@ -242,18 +227,16 @@ public:
 
   bool moving = false;
 
-  Camera(); //build an empty camera instance.
-  Camera(float _x, float _y); //build a camera instance with position.
+  /* 功能：造个空镜头 */
+  Camera();
+  /* 功能：带位置造镜头 */
+  Camera(float _x, float _y);
 
-  // ESP32 移植：_clipTop 为页面顶栏高度——视野上界从 0 移到 _clipTop，
-  // 滚动目标按"选中行贴顶栏下沿/贴屏幕底沿"对齐，行带与顶栏不再重叠
+  /* 功能：顶栏下沿算上界 */
   uint8_t outOfView(float _x, float _y, float _clipTop = 0);
   std::vector<float> getPosition();
 
-  //在启动器中新建selector和camera 然后注入menu render
-  //在启动器中执行下述方法即可实现视角移动
-  //启动器要判断是否超过视角范围 若超过则移动摄像机
-  //所有过程中 渲染好的元素绝对坐标都是不变的 只有摄像机的坐标在变
+  /* 功能：挪镜头换视角 */
   void go(float _x, float _y);
   void goDirect(float _x, float _y);
   void goHorizontal(float _x);
@@ -274,4 +257,4 @@ public:
 
 }
 
-#endif //ASTRA_ASTRA__H
+#endif

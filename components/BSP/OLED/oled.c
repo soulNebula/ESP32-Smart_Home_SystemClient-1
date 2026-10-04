@@ -1,21 +1,13 @@
-/**
- * @file  oled.c
- * @brief SSD1306 128x64 OLED 驱动（I2C / ESP-IDF v5.4 新版 i2c_master API）
+/*
+ * 模块：
+ *   屏幕。把画面画到小屏幕上，被 main.c 和 astra UI 调用，
+ *   自己向下调 i2c_bus 读写屏幕芯片。没插屏也不影响别的功能。
  *
- * ============================ 设计要点 ============================
- * 1. 只用新版 I2C API：i2c_master_probe / i2c_master_bus_add_device /
- *    i2c_master_transmit。不碰已废弃的 i2c_cmd_link_* 老接口。
- * 2. 显存（framebuf）布局和 SSD1306 GDDRAM 完全一致：
- *        buf[page * 128 + x]，每字节 8 行，bit0 = 该列最上面那一行。
- * 3. 【没插屏也能跑】：探测/加设备/首次传输任一失败 → ready=false，
- *    oled_is_ready() 返回 false，之后所有刷新函数都是空操作，
- *    绝不 ESP_ERROR_CHECK / assert / abort。
- * 4. 【文字渲染不在这里】—— 2026-09-29 清理：
- *    本文件原先自带一套 6x8 / 8x16 / 16x16 中文字库 + 仪表盘/开机画面绘制，
- *    这些在换成 astra UI（u8g2 画布）之后【全工程零调用】，已删除（连 oled_font.c
- *    和被它生成的 tools/gen_font.ps1 一起删了）。
- *    现在屏幕内容由 astra UI 用 u8g2 画进画布，再按页交给 oled_write_page()。
- *    本模块只保留：初始化 / 探测 / 清屏 / 整屏刷新 / 按页写入。
+ * 功能：
+ *   把硬件准备好
+ *   没屏就当没这回事
+ *   整屏推上去显示
+ *   按页把画面推上去
  */
 #include "oled.h"
 #include "i2c_bus.h"
@@ -29,70 +21,61 @@
 
 static const char *TAG = "OLED";
 
-/* ============================ 常量 ============================ */
+#define OLED_PAGES          (OLED_HEIGHT / 8)                 /* 功能：六十四行分八页 */
+#define OLED_BUF_SIZE       (OLED_WIDTH * OLED_HEIGHT / 8)    /* 功能：一共一千零二十四字节 */
 
-#define OLED_PAGES          (OLED_HEIGHT / 8)                 /* 64 行 = 8 页 */
-#define OLED_BUF_SIZE       (OLED_WIDTH * OLED_HEIGHT / 8)    /* 128*64/8 = 1024 字节 */
-
-/* SSD1306 I2C 控制字节：Co=0, D/C#=0 → 后续全是命令；D/C#=1 → 后续全是数据 */
+/* 功能：命令和数据分开 */
 #define OLED_CTRL_CMD       0x00
 #define OLED_CTRL_DATA      0x40
 
-/* 一次 I2C 传输的最大数据量：128 字节 = 一整页，避免单次传输过长 */
+/* 功能：一次最多发一页 */
 #define OLED_CHUNK_MAX      OLED_WIDTH
 
-/* I2C 出错日志最多打几条，避免没插屏时刷屏 */
+/* 功能：出错日志最多三条 */
 #define OLED_IO_ERR_LOG_MAX 3
 
-/* ============================ 静态状态 ============================ */
-
-/** 显存：1024 字节，布局 = SSD1306 GDDRAM（buf[page*128 + x]，bit0 在上） */
+/* 功能：显存一千零二十四字节 */
 static uint8_t s_framebuf[OLED_BUF_SIZE];
 
-static i2c_master_dev_handle_t s_dev = NULL;    /* OLED 从机句柄 */
-static uint8_t s_addr = BSP_I2C_ADDR_SSD1306;   /* 实际探测到的地址（0x3C 或 0x3D） */
-static bool s_ready = false;                    /* 屏是否可用（false → 全部空操作） */
-static uint32_t s_io_err_cnt = 0;               /* 运行期 I2C 错误计数（只用于限制日志） */
+static i2c_master_dev_handle_t s_dev = NULL;    /* 功能：屏幕的句柄 */
+static uint8_t s_addr = BSP_I2C_ADDR_SSD1306;   /* 功能：探到的地址 */
+static bool s_ready = false;                    /* 功能：屏幕能不能用 */
+static uint32_t s_io_err_cnt = 0;               /* 功能：出错次数只用来限日志 */
 
-/**
- * @brief SSD1306 128x64 标准初始化序列
- * 参数按常见模块（0.96" 128x64）取值，见注释。
- */
+/* 功能：屏幕的上电设置 */
 static const uint8_t s_init_cmds[] = {
-    0xAE,               /* display off */
-    0x20, 0x00,         /* memory addressing mode = horizontal */
-    0xB0,               /* page start address = 0 */
-    0xC8,               /* COM output scan direction = remapped（上下不倒） */
-    0x00,               /* lower column address = 0 */
-    0x10,               /* higher column address = 0 */
-    0x40,               /* display start line = 0 */
-    0x81, 0xCF,         /* contrast = 0xCF */
-    0xA1,               /* segment remap（左右不倒） */
-    0xA6,               /* normal display（非反白） */
-    0xA8, 0x3F,         /* multiplex ratio = 64 */
-    0xA4,               /* entire display ON 跟随 RAM 内容 */
-    0xD3, 0x00,         /* display offset = 0 */
-    0xD5, 0x80,         /* clock divide ratio / oscillator frequency */
-    0xD9, 0xF1,         /* pre-charge period */
-    0xDA, 0x12,         /* COM pins hardware configuration */
-    0xDB, 0x40,         /* VCOMH deselect level */
-    0x8D, 0x14,         /* charge pump enable（模块内部升压，必须开）*/
-    0xAF,               /* display on */
+    0xAE,               /* 功能：先关显示 */
+    0x20, 0x00,         /* 功能：设成顺序寻址 */
+    0xB0,               /* 功能：从第零页开始 */
+    0xC8,               /* 功能：上下方向不倒 */
+    0x00,               /* 功能：列地址低四位 */
+    0x10,               /* 功能：列地址高四位 */
+    0x40,               /* 功能：从第零行开始 */
+    0x81, 0xCF,         /* 功能：对比度调到中间 */
+    0xA1,               /* 功能：左右方向不倒 */
+    0xA6,               /* 功能：正常显示不反白 */
+    0xA8, 0x3F,         /* 功能：六十四行全用上 */
+    0xA4,               /* 功能：跟着显存内容走 */
+    0xD3, 0x00,         /* 功能：显示不偏移 */
+    0xD5, 0x80,         /* 功能：内部时钟分频 */
+    0xD9, 0xF1,         /* 功能：预充电时间 */
+    0xDA, 0x12,         /* 功能：引脚接法 */
+    0xDB, 0x40,         /* 功能：电压档位 */
+    0x8D, 0x14,         /* 功能：开内部升压必须开 */
+    0xAF,               /* 功能：最后开显示 */
 };
 
-/* ============================ 底层 I2C / 显存工具 ============================ */
-
-/** @brief 纯 I2C 写（不做 ready 判断，初始化过程中也要用） */
+/* 功能：往屏上写一段数据 */
 static esp_err_t oled_i2c_write(const uint8_t *buf, size_t len)
 {
     if (s_dev == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    /* xfer_timeout_ms = BSP_I2C_TIMEOUT_MS（board_config.h，不许硬编码） */
+    /* 功能：等着的时间取自板级表 */
     return i2c_master_transmit(s_dev, buf, len, BSP_I2C_TIMEOUT_MS);
 }
 
-/** @brief 运行期 I2C 失败计数 + 限流日志（屏被拔掉时不要刷屏） */
+/* 功能：数错误少打日志 */
 static void oled_note_io_err(const char *what, esp_err_t err)
 {
     if (s_io_err_cnt < OLED_IO_ERR_LOG_MAX) {
@@ -102,11 +85,7 @@ static void oled_note_io_err(const char *what, esp_err_t err)
     s_io_err_cnt++;
 }
 
-/**
- * @brief 发一串 SSD1306 命令（会自动在前面补控制字节 0x00）
- * @param cmds 命令字节数组
- * @param n    命令字节数（不含控制字节）
- */
+/* 功能：发一串设置命令 */
 static esp_err_t oled_send_cmds(const uint8_t *cmds, size_t n)
 {
     uint8_t buf[1 + 32];
@@ -124,23 +103,22 @@ static esp_err_t oled_send_cmds(const uint8_t *cmds, size_t n)
     return oled_i2c_write(buf, n + 1);
 }
 
-/** @brief 只清显存（不上屏），初始化内部使用，不受 ready 影响 */
+/* 功能：只清内存不上屏 */
 static void framebuf_clear(void)
 {
     memset(s_framebuf, 0x00, sizeof(s_framebuf));
 }
 
-/* ============================ 初始化 ============================ */
-
+/* 功能：把屏幕准备好 */
 esp_err_t oled_init(void)
 {
-    /* 幂等：已经起来了就直接返回 */
+    /* 功能：已经好了就直接返回 */
     if (s_ready) {
         ESP_LOGD(TAG, "oled already initialized");
         return ESP_OK;
     }
 
-    /* 1. I2C 总线（幂等，OLED/传感器共用；失败说明总线都建不起来） */
+    /* 功能：先把总线拉起来 */
     esp_err_t err = i2c_bus_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2c_bus_init failed: %s", esp_err_to_name(err));
@@ -153,9 +131,7 @@ esp_err_t oled_init(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* 2. 探测地址。
-     *    SSD1306 模块常见两种 I2C 地址：0x3C（绝大多数）和 0x3D（ADDR 脚被拉高）。
-     *    两个都试一下，省得买到 0x3D 的模块还得手动改 board_config.h。 */
+    /* 功能：两种地址都试一下 */
     {
         static const uint8_t candidates[] = { BSP_I2C_ADDR_SSD1306, 0x3D };
         uint8_t found = 0;
@@ -180,12 +156,12 @@ esp_err_t oled_init(void)
         s_addr = found;
     }
 
-    /* 3. 添加 OLED 从机设备（重复调用时复用已有句柄） */
+    /* 功能：把屏幕挂到总线上 */
     if (s_dev == NULL) {
         i2c_device_config_t dev_cfg = {
-            .dev_addr_length = I2C_ADDR_BIT_LEN_7,      /* 7 位地址 */
-            .device_address  = s_addr,                  /* 探测到的地址 */
-            .scl_speed_hz    = BSP_I2C_FREQ_HZ,         /* 400kHz，来自 board_config.h */
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,      /* 功能：地址是七位 */
+            .device_address  = s_addr,                  /* 功能：刚才探到的地址 */
+            .scl_speed_hz    = BSP_I2C_FREQ_HZ,         /* 功能：速率取自板级表 */
         };
         err = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev);
         if (err != ESP_OK) {
@@ -196,7 +172,7 @@ esp_err_t oled_init(void)
         }
     }
 
-    /* 4. 发初始化序列（这一步失败 = 屏其实不在 / 接线有问题） */
+    /* 功能：发设置命令 */
     err = oled_send_cmds(s_init_cmds, sizeof(s_init_cmds));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "send init sequence failed: %s, OLED disabled", esp_err_to_name(err));
@@ -204,9 +180,9 @@ esp_err_t oled_init(void)
         return ESP_ERR_NOT_FOUND;
     }
 
-    /* 5. 清屏并刷一次，避免上电出现雪花 */
+    /* 功能：先清干净免得出雪花 */
     framebuf_clear();
-    s_ready = true;                     /* refresh 内部要检查 ready，所以先置位 */
+    s_ready = true;                     /* 功能：先置位再刷新 */
     s_io_err_cnt = 0;
     oled_refresh();
 
@@ -216,13 +192,13 @@ esp_err_t oled_init(void)
     return ESP_OK;
 }
 
+/* 功能：屏幕能用吗 */
 bool oled_is_ready(void)
 {
     return s_ready;
 }
 
-/* ============================ 显存刷新 ============================ */
-
+/* 功能：清空显示 */
 void oled_clear(void)
 {
     if (!s_ready) {
@@ -231,6 +207,7 @@ void oled_clear(void)
     framebuf_clear();
 }
 
+/* 功能：写一页并上屏 */
 void oled_write_page(uint8_t page, const uint8_t *data)
 {
     if (!s_ready || s_dev == NULL || data == NULL) {
@@ -240,11 +217,11 @@ void oled_write_page(uint8_t page, const uint8_t *data)
         return;
     }
 
-    /* 光标定位到 (x=0, page)，然后整页突发写入（与 oled_refresh 同一套时序） */
+    /* 功能：定位到本页开头 */
     const uint8_t cmds[3] = {
         (uint8_t)(0xB0 | page),
-        0x00,                                   /* 低 4 位列地址 = 0（SSD1306 列偏移 0） */
-        0x10,                                   /* 高 4 位列地址 = 0 */
+        0x00,                                   /* 功能：列地址低四位是零 */
+        0x10,                                   /* 功能：列地址高四位是零 */
     };
     esp_err_t err = oled_send_cmds(cmds, sizeof(cmds));
     if (err != ESP_OK) {
@@ -261,21 +238,22 @@ void oled_write_page(uint8_t page, const uint8_t *data)
     }
 }
 
+/* 功能：整屏推上去 */
 void oled_refresh(void)
 {
     if (!s_ready || s_dev == NULL) {
         return;
     }
 
-    uint8_t buf[1 + OLED_CHUNK_MAX];    /* [控制字节][128 字节数据] = 129 字节 */
+    uint8_t buf[1 + OLED_CHUNK_MAX];    /* 功能：控制字节加一页 */
     buf[0] = OLED_CTRL_DATA;
 
     for (int page = 0; page < OLED_PAGES; page++) {
-        /* 光标定位到 (x=0, page)：0xB0|page、低 4 位列地址、高 4 位列地址 */
+        /* 功能：先定位到这一页 */
         const uint8_t cmds[3] = {
             (uint8_t)(0xB0 | page),
-            0x00,                                   /* 0x00 | (0 & 0x0F) */
-            0x10,                                   /* 0x10 | ((0 >> 4) & 0x0F) */
+            0x00,                                   /* 功能：列地址低四位是零 */
+            0x10,                                   /* 功能：列地址高四位是零 */
         };
         esp_err_t err = oled_send_cmds(cmds, sizeof(cmds));
         if (err != ESP_OK) {

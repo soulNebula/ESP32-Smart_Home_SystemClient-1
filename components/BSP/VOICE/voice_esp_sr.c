@@ -1,61 +1,82 @@
-/**
- * @file  voice_esp_sr.c
- * @brief INMP441 I²S 麦克风 + 乐鑫 ESP-SR 离线语音识别（唤醒词 + 命令词）
+/*
+ * 模块：
+ *   麦克风离线识别。麦克风进声音，先等唤醒词，再认命令词，
+ *   认出来交回 voice.c 的下发口，最后到 main.c 的 voice_on_cmd。
+ *   被 voice.c 调用，自己向下调 i2s_mic.c 拾音、调 esp-sr 认话。
+ *   本方案只有麦克风、没有喇叭，所以认出来了不会出声，提示靠屏幕。
  *
- * ===========================================================================
- *  整体数据流
- * ===========================================================================
+ * 能做这些：
+ *   拾音并降噪
+ *   认出唤醒词
+ *   认出命令词
+ *   翻成命令交出去
+ *   控制台打命令表
  *
- *   INMP441 ──I²S(16K/16bit/mono)──> i2s_mic_read()
- *                                        │
- *                                        ▼
- *                              AFE feed()（噪声抑制 + 增益 + VAD）
- *                                        │
- *                                        ▼
- *                              AFE fetch()（单通道增强后的 16K16bit 音频）
- *                                        │
- *                        ┌───────────────┴────────────────┐
- *                        ▼                                ▼
- *              wakeup_state == DETECTED            命令词阶段
- *              （唤醒词命中了）                      multinet->detect()
- *                        │                                │
- *                        └────────► 识别结果 ─────────────┘
- *                                        │
- *                                        ▼
- *                     查表翻译成 voice_cmd_t → voice_dispatch()
- *                                        │
- *                                        ▼
- *                     App 层 main.c::voice_on_cmd()（一行都没改）
- *
- * ===========================================================================
- *  【设计要点 / 为什么这么写】
- * ===========================================================================
- *  1) 命令词用【运行时 API】注册，不用 menuconfig 里的命令词列表。
- *     实证（读 esp-sr 源码 esp_process_sdkconfig.c）：
- *        esp_mn_commands_update_from_sdkconfig() 一开头就是
- *        `#if defined CONFIG_SR_MN_CN_MULTINET6_QUANT || ... MULTINET7 ...
- *            return NULL;`
- *     —— MultiNet6/7 直接返回 NULL，Kconfig 里那 165 条命令词选项对它们【无效】。
- *     所以 MultiNet7 必须走 esp_mn_commands_alloc/add/update 这条运行时路径。
- *     好处：command_id 由我们自己指定，一条命令一个 voice_cmd_t，映射干净。
- *
- *  2) 命令词写【拼音】而不是汉字。
- *     实证（同一次源码阅读）：
- *        esp_mn_commands_add() 里 `check_speech_command(model_data, string)` 的入参
- *        是拼音，且 vocab 文件里的 token 形如 "▁da" "▁kai"（乐鑫官方
- *        model/multinet_model/fst/commands_cn.txt 也是 "1,da kai kong tiao"）。
- *     MultiNet7 中文的识别单元是【带词界的拼音音节】，所以这里写拼音。
- *     文档里同时给出中文和拼音两列，用户照着中文念就行。
- *
- *  3) 识别任务用【低优先级 + 固定栈】跑，并主动 vTaskDelay(1) 让出 CPU：
- *     ESP-SR 的 AFE 内部给 feed/fetch 各有一个环形缓冲，只要平均消费速度
- *     跟得上，偶尔被 WiFi/BLE 抢占也不会丢数据。反而是"一直占着 CPU 不放"
- *     会饿死 WiFi 任务、影响 MQTT 心跳 —— 那才是真正的共存风险。
- *
- *  4) 顺序上【先起网络（WiFi/MQTT/BLE），再起语音】：语音是最"重"的一块，
- *     放最后可以让开机日志里先出现 WiFi/MQTT 成功，出事时一眼能看出是谁的问题；
- *     而且 ESP-SR 初始化会吃掉相当多的内存/PSRAM，晚一点分配能避开和网络
- *     初始化抢堆的峰值。main.c 里的调用顺序已经保证了这一点。
+ * 几句说明：
+ *   这块默认关着，开关在 menuconfig 的"语音识别来源"里。关掉的时候，
+ *   下面整段都会被切掉，只剩文件末尾那几个空壳函数，
+ *   这样 voice.c 里可以照常叫这些名字，不用到处写条件编译。
+ *   命令词用运行时接口注册，不用 menuconfig 里那份命令词列表：
+ *   新版的中文命令词模型会直接忽略那份列表，只能用代码一条条加。
+ *   命令词交上去的是拼音，不是汉字。识别的单元是带词界的拼音音节，
+ *   所以这里写拼音，文档里同时给出中文和拼音两列，照着中文念就行。
+ *   命令词之间要错开。识别是按音节比的，"打开窗户"和"打开窗帘"
+ *   前三个音节一模一样，容易互相抢，所以窗帘改成"拉开/拉上"。
+ *   命令号的编号直接借用命令本身的编号，认出来就知道是哪条，
+ *   不用再维护第二张映射表，少一处会写错的地方。
+ *   喂声音和认话必须分成两个任务。早先挤在一个循环里，认话一堵住
+ *   就没人读麦克风了，只能空转着问，越问越空、越空越打，日志被刷掉
+ *   九成，串口台子没法用。分成两个之后，喂的自己按点喂，认话的
+ *   安静地等，日志就干净了。
+ *   取结果那个超时不能给 0。给 0 就是空转着不停问，问一次打一行，
+ *   一秒钟能打一百多行，还把串口写阻塞，反过来拖慢喂声音。
+ *   认话任务的栈给了 12288。这个任务里会直接叫上层的回话口，
+ *   一路走到设备状态和上报，那条链在别的模块 3072 字节的栈上
+ *   实测栈溢出崩溃过，再叠上识别自己的调用深度，所以要留够。
+ *   喂声音那个任务的栈也给了 12288。一开始只给 4096，真机上跑起来
+ *   立刻栈溢出崩溃，因为喂进去之后里面还要跑一串降噪和判人声的计算，
+ *   调用深度比"只读个麦克风"大得多。
+ *   认话的优先级要高于喂声音的。实测太低会被同核的喂声音任务挤住，
+ *   一帧要算好几百毫秒，等命令的窗口迟迟走不完，命令词就认不出来。
+ *   喂声音的优先级又高于按键扫描。曾经以为它被饿着，抬到很高，
+ *   后来加探针一量根本没饿，就退回来了 —— 没有实测依据就不要把
+ *   实时任务抬到所有应用任务之上。
+ *   两个任务都绑在核一。核零主要忙无线，绑开点少抢内存。
+ *   降噪要关掉。开着的时候喊十几遍才醒一次，官方例子本来也不开；
+ *   家里的底噪交给判人声那一步和唤醒词模型自己扛。
+ *   唤醒门槛调松一点，先保证喊得动，嫌太灵再改回去。
+ *   判人声那一步用最松的档，宁可多留一点音频，别把命令词的开头吃掉。
+ *   板载内存很宝贵，要留给无线和各任务栈，所以中间缓冲尽量放外部
+ *   内存，这是三个无线功能能一起跑最关键的一条。
+ *   不放额外放大。麦克风本来就够灵，放大会连底噪一起放大，
+ *   反而更容易误判。
+ *   麦克风没接的时候，数据脚是低电平，读回来全是 0。这种帧照样
+ *   喂进去保持节奏，只是隔三十秒提醒一声，不要当成坏帧丢掉。
+ *   读不满一整帧的时候不喂，只在真没数据时才让一下路；
+ *   读满了立刻读下一帧，不然白白压低喂的速率。
+ *   全零帧、喂失败这些数只给日志看。上一版把这些数打在取结果之后，
+ *   取不到就跳过去了，结果一次都没打出来，排查时等于没有眼睛。
+ *   健康日志的位置很要紧，必须放在循环里所有跳过之前。
+ *   喂的速率和取的速率要分开算，各自对标。喂够每秒一百帧就算达标，
+ *   取到的天然少一些，因为一次取的多。曾经把两者混着看，
+ *   误判成"喂不过来、丢了三分之一音频"，白折腾一场。
+ *   报概率用整数打印，不用小数格式：本工程可能开了省空间的
+ *   格式化选项，那时候小数会打成空的。
+ *   认出唤醒词之后不回休眠，窗口往后顺延，用户连着说几条命令
+ *   不用每次重喊唤醒词。误触风险不大：得先真喊醒，而且词表就那几条。
+ *   这台设备没有喇叭，所以唤醒和认出来了都只在日志和屏幕上说一声。
+ *   往屏幕递字是识别任务只负责写，界面任务自己来取；写的时候
+ *   先写文字再立旗，别人看到旗就说明文字已经完整了。
+ *   屏幕提示不能在这里直接弹窗，弹窗动画是个阻塞循环，会把识别拖垮。
+ *   每一步失败都只记一条警告就走，绝不把系统弄崩：麦克风没接、
+ *   模型没烧、内存不够，都只是语音这块不能用，别的功能照常。
+ *   唤醒词和命令词的名字都不写死，是从板子上烧好的模型里自己挑的。
+ *   模型打包的时候名字会跟着选项变，自己挑一遍才不会和烧进去的对不上，
+ *   也能把"实际用的是哪个"打进日志给用户看。
+ *   挑唤醒词时自己按新到旧的顺序找：万一勾了好几个，返回的先后
+ *   不一定，日志里就会看到选中的唤醒词飘忽不定。
+ *   开机还会查一遍有没有挑模型，一个都没挑就直接编译不过，
+ *   省得烧进去以后才发现喊不动。
  */
 #include <inttypes.h>
 #include <stdio.h>
@@ -73,48 +94,23 @@
 #include "i2s_mic.h"
 #include "voice.h"
 #include "voice_esp_sr.h"
-#include "voice_internal.h"     /* voice_dispatch() —— 与 ASRPRO 方案共用的唯一汇合点 */
+#include "voice_internal.h"     /* 功能：认出的命令从这走 */
 
 #if CONFIG_APP_VOICE_SOURCE_ESP_SR
 
-/* ---- ESP-SR 头文件（只在开关打开时才包含，保证关掉开关时不依赖该组件） ---- */
+/* 功能：识别用的头文件 */
 #include "esp_afe_config.h"
 #include "esp_afe_sr_iface.h"
 #include "esp_afe_sr_models.h"
 #include "esp_mn_iface.h"
 #include "esp_mn_models.h"
 #include "esp_mn_speech_commands.h"
-#include "esp_process_sdkconfig.h"   /* check_chip_config() */
+#include "esp_process_sdkconfig.h"   /* 功能：查芯片配置用 */
 #include "esp_wn_iface.h"
 #include "esp_wn_models.h"
 #include "model_path.h"
 
-/* ===========================================================================
- *  编译期自检：唤醒词 / 命令词模型必须【至少各选一个】
- * ===========================================================================
- *  模型选项（CONFIG_SR_WN_* / CONFIG_SR_MN_*）住在 esp-sr 组件自己的
- *  Kconfig 菜单里（菜单路径见 main/Kconfig.projbuild 的注释），
- *  这里用 #if defined() 做一致性检查。
- *
- *  为什么不在 Kconfig 里强制：那些选项带 prompt（用户可以改），既不能被
- *  select，在别的 Kconfig 文件里重复定义同名 config 又有产生重名符号的风险。
- *  所以退而求其次：把检查放到编译期 —— 一个都没选就【编译不过】，并直接把
- *  "该去哪个菜单选什么"打在编译错误里，比烧录后运行时才发现好得多。
- *
- *  注意 esp-sr 的 Kconfig 逐个列了唤醒词（wn9s_* / wn9_* / wn7_* …），
- *  这里不可能穷举所有型号，所以只在"一个都没有"时报错；
- *  具体加载哪个由 voice_sr_pick_models() 从 model 分区里自己挑（见该函数）。
- *
- *  ⚠ 本段注释里描述的那个坑（2026-09 实测踩到两次，记录一下免得后人重复）：
- *     下面的 #if 是多行的，行尾用反斜杠做续行。而 C 的【块注释】里出现
- *     "反斜杠 + 换行"时会触发编译错误，报的是
- *         error: 引号内的注释起始符 within comment [-Werror=comment]
- *     构建直接失败。教训有两条：
- *       · 不要在块注释里让某一行以反斜杠结尾；
- *       · 不要在块注释里写出注释的起始符号本身（哪怕是用引号包着）。
- *     本文件这条注释就因为这个坑返工过，写在这里当路标。
- * =========================================================================== */
-// clang-format off
+/* 功能：查有没有挑模型 */
 #if !defined(CONFIG_SR_WN_WN9S_HILEXIN) && !defined(CONFIG_SR_WN_WN9S_HIESP) && \
     !defined(CONFIG_SR_WN_WN9S_NIHAOXIAOZHI) && !defined(CONFIG_SR_WN_WN9S_HIJASON) && \
     !defined(CONFIG_SR_WN_WN9_HILEXIN) && !defined(CONFIG_SR_WN_WN9_HIESP) && \
@@ -133,88 +129,34 @@
     !defined(CONFIG_SR_MN_CN_MULTINET6_AC_QUANT)
 #error "已打开 CONFIG_APP_VOICE_SOURCE_ESP_SR，但没有选择任何【中文命令词模型】。请运行 idf.py menuconfig → 'ESP Speech Recognition' → 'Chinese Speech Commands Model'，勾选一个（推荐 general chinese recognition / mn7_cn）。"
 #endif
-// clang-format on
 
 
 static const char *TAG = "VOICE_SR";
 
-/* -------------------------------------------------------------------------- */
-/*  参数                                                                       */
-/* -------------------------------------------------------------------------- */
-#define VOICE_SR_TASK_STACK     12288   /* 识别任务栈（字节）。
-                                         * ★ 给这么大有具体理由，不是保险起见：
-                                         *   本任务里会【直接】调 voice_dispatch()
-                                         *   → 用户回调 main.c::voice_on_cmd()
-                                         *   → device_model → mqtt_publish_state
-                                         *     （cJSON 递归 + 事件发布）。
-                                         *   voice.c 的文件头记录过：那条链在 3072 字节
-                                         *   栈上【实测栈溢出 panic】（语音命令后必崩）。
-                                         *   这里再叠加 ESP-SR 自身的调用深度，
-                                         *   所以给 12KB（内部 RAM 够，见启动日志）。 */
-#define VOICE_SR_TASK_PRIO      7       /* ★ 2026-10-02 实测：唤醒后 MultiNet detect 每条
-                                         * 帧耗时数百毫秒，识别任务(3)被同核的喂帧任务(5)
-                                         * 挤到只剩 ~10% CPU → AFE 喂帧缓冲溢出、命令词
-                                         * 无法识别（6 秒窗口 52 秒才走完）。抬到 7（高于
-                                         * 喂帧 5）：识别时它拿满 CPU，喂帧有 60ms I²S DMA
-                                         * + 500ms AFE 环形缓冲兜底，短暂让路不会丢音频。 */
-#define VOICE_SR_TASK_CORE      1       /* 绑到核心 1：核心 0 主要跑 WiFi/BLE 协议栈，
-                                         * 减少缓存争抢（本工程 PS 任务未绑核，这里主动避让） */
+/* 功能：这块用的死数 */
+#define VOICE_SR_TASK_STACK     12288   /* 功能：认话任务栈 */
+#define VOICE_SR_TASK_PRIO      7       /* 功能：认话的优先级 */
+#define VOICE_SR_TASK_CORE      1       /* 功能：都绑在核一 */
 
-#define VOICE_SR_MN_DURATION_MS 6000    /* 唤醒后命令词等待窗口：6 秒内没说出命令就回休眠。
-                                         * 太短：老人/孩子一句话没说完就超时；
-                                         * 太长：一直处于"听命令"状态，更容易被电视声误触发。 */
-#define VOICE_SR_READ_TIMEOUT_MS 1000   /* 单次读音频的超时（毫秒） */
+#define VOICE_SR_MN_DURATION_MS 6000    /* 功能：等命令的窗口 */
+#define VOICE_SR_READ_TIMEOUT_MS 1000   /* 功能：读一次等多久 */
 
-/* ---- 喂帧任务（独立任务，理由见 voice_sr_feed_task 上方的长注释）----
- * 优先级【高于】识别任务：喂帧是实时性要求最高的环节，一旦被拖慢，
- * AFE 就会永久欠载并刷屏。它绝大部分时间阻塞在 I²S 读上，并不占 CPU。 */
-#define VOICE_SR_FEED_STACK      12288  /* 喂帧任务栈：只做「读 + feed()」。
-                                         * ★ 实测教训：最初给 4096，真机跑起来
-                                         *   立刻 panic "A stack overflow in task
-                                         *   voice_feed"。原因是 afe->feed() 内部
-                                         *   会跑 NS/VAD/WakeNet 的 DSP 流水线，
-                                         *   调用深度比"只读个 I²S"大得多。
-                                         *   这里和识别任务同量级，并且状态日志里
-                                         *   打印栈余量（HWM）以便日后按实测收窄。 */
-#define VOICE_SR_FEED_PRIO       5      /* 高于识别任务(3)、高于按键扫描(4)。
-                                         * ★ 曾一度提到 15，理由是"喂帧只有 62/秒、
-                                         *   69% 时间没被调度"—— 那是误读（62 是
-                                         *   fetch 频率）。加探针实测占用 99%、
-                                         *   喂帧 199 帧/秒，**不存在调度饥饿**，
-                                         *   所以改回 5：没有实测依据就不要把实时
-                                         *   任务抬到所有应用任务之上。 */
+/* 功能：喂声音单独一个任务 */
+#define VOICE_SR_FEED_STACK      12288  /* 功能：喂声音任务栈 */
+#define VOICE_SR_FEED_PRIO       5      /* 功能：喂声音的优先级 */
 
-/* 识别任务 fetch 的等待超时（毫秒）。
- * ★ 必须是个真实值：0 = 空轮询，AFE 会被反复"问空"并疯狂刷屏
- *   （真机实测 155 行/秒，占满日志，且靠串口写阻塞反过来拖慢喂帧）。
- *   100ms 远大于一帧(10ms)，正常情况下 fetch 立刻返回；即使喂帧真出问题，
- *   刷屏速率也被限制在 ~10 条/秒，不会淹没串口调试台。 */
+/* 功能：取结果最多等这么久 */
 #define VOICE_SR_FETCH_TIMEOUT_MS 100
 
-/* -------------------------------------------------------------------------- */
-/*  命令词表 —— ★★ 这是"说中文 → voice_cmd_t"的唯一映射真源 ★★               */
-/* -------------------------------------------------------------------------- */
-/*  三列含义：
- *      cn     ：中文命令词，给用户看的（文档和 `voice-test` 打印的就是它）
- *      pinyin ：交给 MultiNet 的实际字符串，必须是"带空格的拼音音节"
- *               （MultiNet6/7 的识别单元，见文件头设计要点 2）
- *      cmd    ：翻译成的 voice_cmd_t，下游 App 层只认这个
- *
- *  ⚠ 改动这里必须同步改 docs/13-语音模块-ESP-SR.md 里的命令词表。
- *  ⚠ 命令词之间要有明显差异：MultiNet 是按音节匹配的，
- *    "打开窗户(da kai chuang hu)" 和 "打开窗帘(da kai chuang lian)" 前三个音节
- *    完全相同，容易互相抢；所以窗帘用"拉开/拉上"，和窗户分开。
- *  ⚠ 命令词总数（25 条）远小于模型上限（200 条）；条数越多越容易误识别，
- *    以后加词请优先加差异大的。
- */
+/* 功能：说中文是哪条命令 */
 typedef struct {
-    const char *cn;         /* 中文命令词（UTF-8） */
-    const char *pinyin;     /* 拼音音节串（MultiNet 的识别单元） */
-    voice_cmd_t cmd;        /* 翻译成的指令 */
+    const char *cn;         /* 功能：中文说法，给人看 */
+    const char *pinyin;     /* 功能：交给识别的拼音 */
+    voice_cmd_t cmd;        /* 功能：翻成哪条命令 */
 } voice_sr_cmd_t;
 
 static const voice_sr_cmd_t s_cmds[] = {
-    /* ---- 单个房间灯（4 个房间 × 开关） ---- */
+    /* 功能：各个房间的灯 */
     { "打开客厅灯",   "da kai ke ting deng",     VOICE_CMD_LED_LIVING_ON    },
     { "关闭客厅灯",   "guan bi ke ting deng",    VOICE_CMD_LED_LIVING_OFF   },
     { "打开厨房灯",   "da kai chu fang deng",    VOICE_CMD_LED_KITCHEN_ON   },
@@ -224,51 +166,49 @@ static const voice_sr_cmd_t s_cmds[] = {
     { "打开浴室灯",   "da kai yu shi deng",      VOICE_CMD_LED_BATH_ON      },
     { "关闭浴室灯",   "guan bi yu shi deng",     VOICE_CMD_LED_BATH_OFF     },
 
-    /* ---- 全部灯 ---- */
+    /* 功能：所有的灯 */
     { "打开全部灯",   "da kai quan bu deng",     VOICE_CMD_LED_ALL_ON       },
     { "关闭全部灯",   "guan bi quan bu deng",    VOICE_CMD_LED_ALL_OFF      },
 
-    /* ---- 风扇 ---- */
+    /* 功能：风扇 */
     { "打开风扇",     "da kai feng shan",        VOICE_CMD_FAN_ON           },
     { "关闭风扇",     "guan bi feng shan",       VOICE_CMD_FAN_OFF          },
 
-    /* ---- 窗户（用"打开/关闭窗户"，不与窗帘混） ---- */
+    /* 功能：窗户 */
     { "打开窗户",     "da kai chuang hu",        VOICE_CMD_WINDOW_OPEN      },
     { "关闭窗户",     "guan bi chuang hu",       VOICE_CMD_WINDOW_CLOSE     },
 
-    /* ---- 门 ---- */
+    /* 功能：门 */
     { "打开门",       "da kai men",              VOICE_CMD_DOOR_OPEN        },
     { "关上门",       "guan shang men",          VOICE_CMD_DOOR_CLOSE       },
 
-    /* ---- 窗帘（用"拉开/拉上"，与窗户彻底分开） ---- */
+    /* 功能：窗帘 */
     { "拉开窗帘",     "la kai chuang lian",      VOICE_CMD_CURTAIN_OPEN     },
     { "拉上窗帘",     "la shang chuang lian",    VOICE_CMD_CURTAIN_CLOSE    },
 
-    /* ---- 查询播报（⚠ 没有喇叭，不会出声；但 OLED/MQTT 事件照常） ---- */
+    /* 功能：问一句 */
     { "温度多少",     "wen du duo shao",         VOICE_CMD_QUERY_TEMP       },
     { "湿度多少",     "shi du duo shao",         VOICE_CMD_QUERY_HUMI       },
     { "光照多少",     "guang zhao duo shao",     VOICE_CMD_QUERY_LIGHT      },
     { "播报全部",     "bao bao quan bu",         VOICE_CMD_QUERY_ALL        },
     { "状态如何",     "zhuang tai ru he",        VOICE_CMD_QUERY_STATUS     },
 
-    /* ---- 自动联动总开关 ---- */
+    /* 功能：自动联动的开关 */
     { "打开自动",     "da kai zi dong",          VOICE_CMD_AUTO_ON          },
     { "关闭自动",     "guan bi zi dong",         VOICE_CMD_AUTO_OFF         },
 };
 
 #define VOICE_SR_CMD_NUM (sizeof(s_cmds) / sizeof(s_cmds[0]))
 
-/* -------------------------------------------------------------------------- */
-/*  内部状态                                                                   */
-/* -------------------------------------------------------------------------- */
-static bool              s_started   = false;   /* start 幂等标志 */
-static volatile bool     s_ready     = false;   /* 初始化全部成功？ */
-static volatile bool     s_awake     = false;   /* 已唤醒、正在等命令词？ */
+/* 功能：记着跑到哪一步 */
+static bool              s_started   = false;   /* 功能：开过没，防重开 */
+static volatile bool     s_ready     = false;   /* 功能：全备齐了没 */
+static volatile bool     s_awake     = false;   /* 功能：喊醒了没 */
 
-static srmodel_list_t   *s_models       = NULL; /* model 分区里的模型列表 */
-static char             *s_wn_name      = NULL; /* 选中的唤醒词模型名，如 wn9s_nihaoxiaozhi */
-static char             *s_mn_name      = NULL; /* 选中的命令词模型名，如 mn7_cn */
-static char              s_wake_word[64] = { 0 }; /* 唤醒词显示名（UTF-8） */
+static srmodel_list_t   *s_models       = NULL; /* 功能：板子上的模型 */
+static char             *s_wn_name      = NULL; /* 功能：唤醒词的模型 */
+static char             *s_mn_name      = NULL; /* 功能：命令词的模型 */
+static char              s_wake_word[64] = { 0 }; /* 功能：要喊那句话 */
 
 static const esp_afe_sr_iface_t *s_afe      = NULL;
 static esp_afe_sr_data_t        *s_afe_data = NULL;
@@ -277,19 +217,9 @@ static int                       s_feed_chunksize = 0;
 static const esp_mn_iface_t *s_mn      = NULL;
 static model_iface_data_t   *s_mn_data = NULL;
 
-static int16_t *s_feed_buf = NULL;      /* AFE feed 缓冲（PSRAM） */
+static int16_t *s_feed_buf = NULL;      /* 功能：喂声音的中转 */
 
-/* -------------------------------------------------------------------------- */
-/*  模型选择与命令词注册                                                       */
-/* -------------------------------------------------------------------------- */
-
-/**
- * @brief 打印 model 分区里实际有哪些模型，并挑选唤醒词/命令词模型
- *
- * 为什么要"自己挑"而不是写死名字：模型是 movemodel.py 根据 sdkconfig 打包进
- * srmodels.bin 的，换 menuconfig 选项后实际名字会变；自己挑一次就能保证
- * 代码永远和烧进去的模型一致，也能在日志里把"实际选中的"打给用户看。
- */
+/* 功能：挑出要用的模型 */
 static esp_err_t voice_sr_pick_models(void)
 {
     if (s_models == NULL) {
@@ -297,24 +227,13 @@ static esp_err_t voice_sr_pick_models(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* 1) 把分区里所有模型名列出来 —— 排错时这一行日志最有用：
-     *    如果这里没有以 wn 或 mn 开头的模型，说明 srmodels.bin 没烧进
-     *    model 分区，或者 menuconfig 里模型选项一个都没勾。
-     *    ★ 注意：这里刻意不写出"星号紧跟斜杠"那种通配写法 ——
-     *      在块注释里那个组合就是注释结束符，会把后面的中文当代码编译。 */
+    /* 功能：先打出模型名字 */
     ESP_LOGI(TAG, "model 分区里共有 %d 个模型：", s_models->num);
     for (int i = 0; i < s_models->num; i++) {
         ESP_LOGI(TAG, "  [%d] %s", i, s_models->model_name[i]);
     }
 
-    /* 2) 唤醒词模型：名字以 "wn" 开头（esp-sr 自己的 ESP_WN_PREFIX 就是 "wn"）。
-     *
-     * 为什么不直接 esp_srmodel_filter(models, "wn", NULL) 取第一个：
-     *   如果哪天用户在 menuconfig 里勾了【多个】唤醒词，返回顺序是不确定的，
-     *   日志里就会看到"选中的唤醒词"飘忽不定。这里自己遍历一遍，按
-     *   wn9s_ → wn9l_ → wn9_ → wn8_ → wn7_ 的优先顺序挑，并且把【所有】
-     *   唤醒词都列出来 —— 用户勾了多个时，日志能直接看出来。
-     *   （Kconfig 的 help 里已经写明"必须恰好选一个"，这里只是兜底。） */
+    /* 功能：挑唤醒词的模型 */
     {
         static const char *const prefer[] = { "wn9s_", "wn9l_", "wn9_", "wn8_", "wn7_", NULL };
         for (int p = 0; prefer[p] != NULL && s_wn_name == NULL; p++) {
@@ -333,8 +252,7 @@ static esp_err_t voice_sr_pick_models(void)
         return ESP_ERR_NOT_FOUND;
     }
 
-    /* 3) 中文命令词模型：先按 "mn*cn" 找（例如 mn7_cn），
-     *    找不到再放宽到 "mn"（万一以后模型名规则变了也不至于直接失败）。 */
+    /* 功能：挑中文命令词模型 */
     s_mn_name = esp_srmodel_filter(s_models, "mn", ESP_MN_CHINESE);
     if (s_mn_name == NULL) {
         s_mn_name = esp_srmodel_filter(s_models, "mn", NULL);
@@ -345,11 +263,7 @@ static esp_err_t voice_sr_pick_models(void)
         return ESP_ERR_NOT_FOUND;
     }
 
-    /* 4) 解析唤醒词的"人话"名字（要喊什么），用于日志和文档。
-     *    模型自带的 _MODEL_INFO_ 形如：
-     *        wakenet9s_tts2h8v2_你好小智_3_0.630_0.635
-     *    → esp_srmodel_get_wake_words() 会解析出 "你好小智"。
-     *    这样文档里写的唤醒词一定和实际烧录的模型一致。 */
+    /* 功能：读出要喊那句话 */
     char *ww = esp_srmodel_get_wake_words(s_models, s_wn_name);
     if (ww != NULL) {
         strncpy(s_wake_word, ww, sizeof(s_wake_word) - 1);
@@ -364,13 +278,7 @@ static esp_err_t voice_sr_pick_models(void)
     return ESP_OK;
 }
 
-/**
- * @brief 用运行时 API 把 s_cmds[] 注册进 MultiNet
- *
- * command_id 直接用 voice_cmd_t 的枚举值：这样识别结果里的 command_id
- * 本身就是 voice_cmd_t，不用再维护第二张映射表 —— 少一处会写错的地方。
- * （命令词枚举值是 1~25，而模型要求 command_id 不能为 0，正好满足。）
- */
+/* 功能：把命令词交上去 */
 static esp_err_t voice_sr_register_commands(void)
 {
     if (s_mn == NULL || s_mn_data == NULL) {
@@ -385,8 +293,7 @@ static esp_err_t voice_sr_register_commands(void)
 
     int ok = 0, bad = 0;
     for (size_t i = 0; i < VOICE_SR_CMD_NUM; i++) {
-        /* 注意：命令词用【拼音】。MultiNet 的 check_speech_command() 会对
-         * 每个词做一次词表校验，非法格式会在这里返回错误并打自己的日志。 */
+        /* 功能：词要交拼音 */
         const esp_err_t e = esp_mn_commands_add((int)s_cmds[i].cmd, s_cmds[i].pinyin);
         if (e == ESP_OK) {
             ok++;
@@ -397,7 +304,7 @@ static esp_err_t voice_sr_register_commands(void)
         }
     }
 
-    /* 必须调 update 才会真正把命令词编译进语言模型 */
+    /* 功能：交上去才算装好 */
     esp_mn_error_t *mn_err = esp_mn_commands_update();
     if (mn_err != NULL && mn_err->num > 0) {
         ESP_LOGW(TAG, "有 %d 条命令词无法被 MultiNet 解析（识别时不会命中）：",
@@ -412,59 +319,38 @@ static esp_err_t voice_sr_register_commands(void)
     return (ok > 0) ? ESP_OK : ESP_FAIL;
 }
 
-/* -------------------------------------------------------------------------- */
-/*  运行统计（只给日志用）                                                     */
-/* -------------------------------------------------------------------------- */
-/*  ★ 这几个数字是本次缺陷排查的关键。上一版把"喂帧数"打在 fetch 之后，
- *    而 fetch 一失败就 `continue`，结果【一次都没打出来】。              */
-static volatile uint32_t s_st_feed_ok   = 0;    /* 成功喂进 AFE 的帧数 */
-static volatile uint32_t s_st_feed_fail = 0;    /* 读不满一帧 / feed() 失败 次数 */
-static volatile uint32_t s_st_zero      = 0;    /* 全 0 帧数（麦克风没接的典型表现） */
+/* 功能：只给日志看的数 */
+static volatile uint32_t s_st_feed_ok   = 0;    /* 功能：喂进去多少帧 */
+static volatile uint32_t s_st_feed_fail = 0;    /* 功能：喂失败多少次 */
+static volatile uint32_t s_st_zero      = 0;    /* 功能：全零帧多少个 */
 
-/* 喂帧任务的句柄：只为了在状态日志里查它的栈余量（HWM）。
- * 真机踩过 "stack overflow in task voice_feed"，所以要把余量暴露出来。 */
+/* 功能：留着喂声音的把手 */
 static TaskHandle_t      s_feed_task_h  = NULL;
 
-/* 喂帧耗时探针（窗口内累计，状态日志打印后清零）。
- * ★ 为什么需要它，以及它纠正了什么错误结论（真实排查记录）：
- *   最初把状态日志里的 w_frames（fetch 成功次数 = 62 次/秒）误当成"喂帧速率"，
- *   于是判断"喂帧只有 62/秒 < 目标 100，丢了 38% 音频"。加了本探针之后实测：
- *       读 997 次 / 5 秒 = 199 次/秒，feed 997 次 / 5 秒 = 199 帧/秒，
- *       占用 99%，读均 4.7ms、feed 均 0.3ms。
- *   即【喂帧一直是达标的，199 > 100】；62 只是 fetch 频率，而
- *       fetch_chunksize(512) / feed_chunksize(160) = 3.2，199/3.2 = 62 ✔
- *   两个量本来就不同，拿来对比才凭空造出一个不存在的问题。
- *   这也是为什么探针里【同时】记录调用次数与耗时：只有均值没有次数，
- *   连"占用率"都算不出来（当时就因此误判成"任务被抢占、69% 时间没跑"）。
- *   注：占用率把 i2s_mic_read() 的阻塞等待也算进去，所以它只说明
- *       "时间花在哪段代码上"，不等于 CPU 忙。 */
-static volatile uint32_t s_t_read_us = 0;   /* 窗口内 i2s_mic_read() 累计微秒 */
-static volatile uint32_t s_t_reads   = 0;   /* 窗口内 read 调用次数 */
-static volatile uint32_t s_t_feed_us = 0;   /* 窗口内 afe->feed() 累计微秒 */
-static volatile uint32_t s_t_feeds   = 0;   /* 窗口内 feed 调用次数 */
+/* 功能：量一量时间花在哪 */
+static volatile uint32_t s_t_read_us = 0;   /* 功能：读麦克风累计 */
+static volatile uint32_t s_t_reads   = 0;   /* 功能：读了几次 */
+static volatile uint32_t s_t_feed_us = 0;   /* 功能：喂进去累计 */
+static volatile uint32_t s_t_feeds   = 0;   /* 功能：喂了几次 */
 
-/* ---- 诊断探针（唤醒问题排查；确认修复后可整体删除）----
- * 唤醒词喊了没反应时，光靠电平表只能证明"麦克风在工作"，看不到
- * AFE 内部的 VAD 门和 wakenet 状态。这里补两个只打【变化/限速】的日志：
- *   · VAD 状态翻转（静音↔说话）—— 证明声音有没有被 VAD 判成语音；
- *   · wakenet 输入电平（res->data_volume，wakenet 接收窗约 1.5s 的 dB 值）
- *     —— 说话时它会明显抬高，和串口 `mic` 的电平互相印证。 */
-static volatile int32_t s_diag_last_vad     = -1;   /* 上次的 VAD 状态（初值 -1 保证首帧必打） */
-static int64_t          s_diag_last_vol_us  = 0;    /* wakenet 输入电平日志的限速 */
-static volatile uint32_t s_diag_detect_us   = 0;    /* 窗口内 MultiNet detect() 累计微秒 */
-static volatile uint32_t s_diag_detect_n    = 0;    /* 窗口内 detect() 调用次数 */
+/* 功能：喊不醒时看诊断 */
+static volatile int32_t s_diag_last_vad     = -1;   /* 功能：上次静音还是说话 */
+static int64_t          s_diag_last_vol_us  = 0;    /* 功能：电平日志限速 */
+static volatile uint32_t s_diag_detect_us   = 0;    /* 功能：辨命令累计 */
+static volatile uint32_t s_diag_detect_n    = 0;    /* 功能：辨了几次 */
 
-/* ---- OLED 提示（见 voice_esp_sr.h 的说明：本方案无喇叭，反馈靠屏幕） ---- */
+/* 功能：往屏幕递的字 */
 voice_ui_note_t g_voice_ui_note = { 0, { 0 } };
 
+/* 功能：写一条屏幕提示 */
 void voice_ui_note(const char *text)
 {
-    /* 先写文字、再置 pending：消费方看到 pending=1 时文字一定完整 */
+    /* 功能：先写字再立旗 */
     snprintf(g_voice_ui_note.text, sizeof(g_voice_ui_note.text), "%s", text);
     g_voice_ui_note.pending = 1;
 }
 
-/** @brief 按 voice_cmd_t 反查中文命令词（OLED 提示用） */
+/* 功能：命令翻中文说法 */
 static const char *voice_sr_cmd_cn(voice_cmd_t cmd)
 {
     for (size_t i = 0; i < VOICE_SR_CMD_NUM; i++) {
@@ -475,43 +361,12 @@ static const char *voice_sr_cmd_cn(voice_cmd_t cmd)
     return "未知指令";
 }
 
-/* -------------------------------------------------------------------------- */
-/*  喂帧任务：只做「读 I²S → AFE feed()」这一件事                              */
-/* -------------------------------------------------------------------------- */
-/*  ★ 为什么必须【独立成一个任务】，而不是和识别挤在同一个 for(;;) 里 ★
- *
- *  这是真机实测逼出来的，不是"架构洁癖"。原先的写法实测：
- *      AFE 底层 "Ringbuffer of AFE is empty, Please use feed() to write data"
- *      稳定刷屏 155 行/秒，把日志占掉 93%，串口调试台完全没法用。
- *
- *  ★ 根因（实测确认后的说法，早先的推测是错的）：
- *      `fetch_with_delay(afe_data, 0)` —— 超时给 0 = 空轮询。
- *      环形缓冲还没攒够一帧时它照样去取，取不到 AFE 就打一条告警；
- *      而那条告警走 115200 串口是【写阻塞】的，反过来拖慢循环，
- *      于是"越问越空、越空越打"。
- *      ★ 关键：当时【喂帧速率本来是达标的】（后来加了探针实测 199 帧/秒
- *        > 目标 100），所以这条刷屏与"喂得慢"无关，纯粹是【把非阻塞
- *        fetch 当轮询用】。早先归因为"喂帧只有 55/秒导致 AFE 欠载"是误读
- *        —— 55 其实是 fetch 成功次数（fetch_chunksize 512 = 3.2×feed 160）。
- *
- *  那为什么还要拆成两个任务？因为**阻塞式 fetch 必须有个专门的喂帧者**：
- *      识别任务一旦阻塞在 fetch 里等数据，就没人读 I²S、没人 feed 了 ——
- *      这正是原设计只能退化成空轮询的原因（同一个循环里 feed 和 fetch
- *      不可能同时阻塞）。
- *
- *  拆开之后：
- *      · 喂帧任务只认 I²S 的节奏，持续按实时速率喂，不受识别/串口/无线影响；
- *      · 识别任务用【阻塞式】fetch 安静地等数据，等不到只返回 NULL，
- *        不再去"问空" AFE —— 那条告警于是自然消失（实测 4752 行 → 2 行，
- *        且剩下 2 行都出现在喂帧任务启动之前的启动窗口内）。
- *
- *  这也是乐鑫官方 ESP-SR 示例的结构：feed 一个任务、detect 一个任务。   */
+/* 功能：专门喂声音的任务 */
 static void voice_sr_feed_task(void *arg)
 {
     (void)arg;
 
-    /* 启动阶段：等 I²S/麦克风稳定。INMP441 上电后前 ~50ms 数据无效，
-     * 另外 AFE 自己也需要几帧才能把降噪/AGC 收敛。 */
+    /* 功能：先等麦克风稳一稳 */
     vTaskDelay(pdMS_TO_TICKS(300));
 
     int64_t last_zero_warn_us = 0;
@@ -523,9 +378,7 @@ static void voice_sr_feed_task(void *arg)
              BSP_I2S_MIC_SAMPLE_RATE / s_feed_chunksize);
 
     for (;;) {
-        /* ---- 读满【正好】一帧 ----
-         * i2s_mic_read() 内部会一直读到凑满 samples 或超时预算耗尽，
-         * 所以正常情况下一次调用就拿到一整帧（160 点 = 10ms @16KHz）。 */
+        /* 功能：一次读够一帧 */
         const int64_t t_read0 = esp_timer_get_time();
         size_t got = 0;
         const esp_err_t err = i2s_mic_read(s_feed_buf, (size_t)s_feed_chunksize,
@@ -534,9 +387,7 @@ static void voice_sr_feed_task(void *arg)
         s_t_reads++;
 
         if (got < (size_t)s_feed_chunksize) {
-            /* 没凑满一帧：AFE 只接受完整帧，这一轮不喂。
-             * ★ 只在【真没数据】时让出 CPU；读满了立刻读下一帧，不加 sleep，
-             *   否则会白白压低喂帧速率。 */
+            /* 功能：没读全就不喂 */
             s_st_feed_fail++;
             if ((s_st_feed_fail == 1) || ((s_st_feed_fail % 100) == 0)) {
                 ESP_LOGW(TAG, "读麦克风未凑满一帧 %u 次（%s，本次 %u/%d 点）："
@@ -549,9 +400,7 @@ static void voice_sr_feed_task(void *arg)
             continue;
         }
 
-        /* ---- 全 0 检测 ----
-         * 麦克风没接时 I²S 数据脚被拉低，读回来全是 0。这种帧照样喂给 AFE
-         * （保持时序、不让它欠载），只是周期性地提醒用户一次。 */
+        /* 功能：看看是不是全零 */
         bool all_zero = true;
         for (int i = 0; i < s_feed_chunksize; i++) {
             if (s_feed_buf[i] != 0) { all_zero = false; break; }
@@ -567,9 +416,7 @@ static void voice_sr_feed_task(void *arg)
             }
         }
 
-        /* ---- 喂 AFE ----
-         * feed() 返回"消费掉的采样点数"，负数表示失败。
-         * ★ 这里单独计时，用来判断"喂帧只有 62 帧/秒"的瓶颈是不是 feed()。 */
+        /* 功能：把这一帧喂进去 */
         const int64_t t_feed0 = esp_timer_get_time();
         const int      feed_ret = s_afe->feed(s_afe_data, s_feed_buf);
         s_t_feed_us += (uint32_t)(esp_timer_get_time() - t_feed0);
@@ -587,9 +434,7 @@ static void voice_sr_feed_task(void *arg)
     }
 }
 
-/* -------------------------------------------------------------------------- */
-/*  识别任务：fetch 音频 → 唤醒词 → 命令词 → voice_dispatch()                   */
-/* -------------------------------------------------------------------------- */
+/* 功能：等数据认话交出去 */
 static void voice_sr_task(void *arg)
 {
     (void)arg;
@@ -597,42 +442,30 @@ static void voice_sr_task(void *arg)
     ESP_LOGI(TAG, "识别任务已启动：先喊「%s」，等日志出现『已唤醒』后再说命令词", s_wake_word);
     ESP_LOGI(TAG, "命令词共 %d 条，串口敲 voice-test 可打印完整列表", (int)VOICE_SR_CMD_NUM);
 
-    uint32_t w_frames     = 0;      /* 本窗口内 fetch 成功的帧数 */
-    uint32_t w_fetch_null = 0;      /* 本窗口内 fetch 没取到数据的次数 */
+    uint32_t w_frames     = 0;      /* 功能：这轮取到多少帧 */
+    uint32_t w_fetch_null = 0;      /* 功能：这轮空手多少次 */
     int64_t  last_status_us = esp_timer_get_time();
 
     ESP_LOGI(TAG, "识别任务进入主循环：阻塞式 fetch，超时 %d ms",
              VOICE_SR_FETCH_TIMEOUT_MS);
 
     for (;;) {
-        /* ---- 1. 取增强后的音频 + 唤醒状态 ----
-         * ★ 这里必须给【真实超时】，不能用 0：
-         *   0 = 空轮询，AFE 每被问一次空就打一条 "Ringbuffer of AFE is empty"，
-         *   实测刷屏 155 行/秒，并且靠串口阻塞反过来拖慢喂帧。
-         *   给超时后它会安静地等数据，等不到只返回 NULL。 */
+        /* 功能：等一小段声音 */
         afe_fetch_result_t *res =
             s_afe->fetch_with_delay(s_afe_data, pdMS_TO_TICKS(VOICE_SR_FETCH_TIMEOUT_MS));
 
-        /* ---- 2. 周期性健康日志（每 5 秒一条）----
-         * ★ 位置非常关键：必须放在本循环【所有 continue 之前】。
-         *   上一版这段写在 fetch 之后、且 fetch 失败就 continue，于是这条
-         *   日志一次都没打出来 —— 排查时等于完全没有眼睛。 */
+        /* 功能：五秒打一条健康日志 */
         const int64_t now_us = esp_timer_get_time();
         if (now_us - last_status_us > 5LL * 1000 * 1000) {
             const int64_t win_us = now_us - last_status_us;
             i2s_mic_level_t lv;
             i2s_mic_read_level(&lv);
-            /* 求两段耗时的均值（探针由喂帧任务累计，这里读取并清零） */
+            /* 功能：算两段平均耗时 */
             const uint32_t n_reads     = s_t_reads ? s_t_reads : 1;
             const uint32_t n_feeds     = s_t_feeds ? s_t_feeds : 1;
             const uint32_t avg_read_us = s_t_read_us / n_reads;
             const uint32_t avg_feed_us = s_t_feed_us / n_feeds;
-            /* ★ feed 速率与 fetch 速率必须【分开算、各自对标】（这里踩过坑）：
-             *   feed  = 真正喂进 AFE 的帧数/秒，目标 = 16000/160 = 100；
-             *   fetch = 识别循环取到数据的次数/秒 ≈ feed/3.2
-             *           （fetch_chunksize 512 = 3.2 × feed_chunksize 160）。
-             *   上一版把 fetch 次数标成"喂帧/秒、目标 100"，于是 62 被误读成
-             *   "喂帧不达标、丢了 38% 音频"——两个量根本不是一回事。 */
+            /* 功能：喂和取分开算 */
             const int feed_rate  = (win_us > 0)
                                        ? (int)((int64_t)s_t_feeds * 1000000 / win_us) : 0;
             const int fetch_rate = (win_us > 0)
@@ -670,7 +503,7 @@ static void voice_sr_task(void *arg)
             last_status_us = now_us;
             w_frames       = 0;
             w_fetch_null   = 0;
-            s_t_read_us    = 0;   /* 耗时探针按窗口清零 */
+            s_t_read_us    = 0;   /* 功能：分段的数用完清零 */
             s_t_reads      = 0;
             s_t_feed_us    = 0;
             s_t_feeds      = 0;
@@ -680,11 +513,11 @@ static void voice_sr_task(void *arg)
 
         if (res == NULL || res->ret_value == -1) {
             w_fetch_null++;
-            continue;   /* fetch_with_delay 已经等过了，这里不需要再 delay */
+            continue;   /* 功能：等过了，不用再等 */
         }
         w_frames++;
 
-        /* ---- 诊断探针（见 s_diag_last_vad 处的说明）---- */
+        /* 功能：喊不醒时看诊断 */
         if ((int32_t)res->vad_state != s_diag_last_vad) {
             s_diag_last_vad = (int32_t)res->vad_state;
             ESP_LOGI(TAG, "[诊断] VAD 状态变为: %s",
@@ -698,9 +531,7 @@ static void voice_sr_task(void *arg)
             const int64_t now_diag_us = esp_timer_get_time();
             if (now_diag_us - s_diag_last_vol_us > 1000000LL) {
                 s_diag_last_vol_us = now_diag_us;
-                /* 统计 fetch 输出帧的峰值：wakenet/MultiNet 拿到的就是这个音频。
-                 * 说话时 peak 应到几千；peak≈0 说明 AFE 输出是空的，
-                 * 那 data_volume 的 0 就是"真没声音"，不是字段没填充。 */
+                /* 功能：量声音有多大 */
                 int32_t pk = 0;
                 const int n = (res->data != NULL) ? (res->data_size / 2) : 0;
                 for (int i = 0; i < n; i++) {
@@ -713,23 +544,20 @@ static void voice_sr_task(void *arg)
             }
         }
 
-        /* ---- 3. 唤醒词命中 ----
-         * wakeup_state 枚举：WAKENET_DETECTED(1) 检测到；WAKENET_CHANNEL_VERIFIED(-1)
-         * 是"多麦时确认了是哪个通道"，单麦不会出现，但一起判上更稳。 */
+        /* 功能：听见唤醒词了 */
         if (res->wakeup_state == WAKENET_DETECTED) {
             if (!s_awake) {
                 s_awake = true;
-                /* 唤醒提示：本工程没有喇叭，所以"提示音"靠串口日志 + OLED 弹窗。
-                 * （将来加了功放+喇叭，可以在这里播一个"滴"的提示音。） */
+                /* 功能：喊醒了得让人知道 */
                 ESP_LOGI(TAG, "★ 已唤醒（唤醒词=「%s」）—— 请说命令词，%d 秒内有效",
                          s_wake_word, VOICE_SR_MN_DURATION_MS / 1000);
                 voice_ui_note("已唤醒，请说命令");
             }
-            /* 重新开始命令词监听窗口：连续说多条命令时窗口会顺延 */
+            /* 功能：重开等命令窗口 */
             s_mn->clean(s_mn_data);
         }
 
-        /* ---- 4. 命令词识别（只在唤醒后跑，这是 MultiNet 的要求） ---- */
+        /* 功能：认命令，先喊醒才认 */
         if (s_awake) {
             const int64_t t_det0 = esp_timer_get_time();
             const esp_mn_state_t mn_state = s_mn->detect(s_mn_data, res->data);
@@ -739,10 +567,9 @@ static void voice_sr_task(void *arg)
             if (mn_state == ESP_MN_STATE_DETECTED) {
                 esp_mn_results_t *r = s_mn->get_results(s_mn_data);
                 if (r != NULL && r->num > 0) {
-                    /* command_id 就是 voice_cmd_t（注册时故意这么定的） */
+                    /* 功能：命令号就是命令 */
                     const int cid = r->command_id[0];
-                    /* 概率只有 0~1，用 ×1000 的整数打印，避免用 %f
-                     * （本工程可能开 NANO_FORMAT，%f 会打成空串） */
+                    /* 功能：把握用整数打 */
                     const int prob_x1000 = (int)(r->prob[0] * 1000.0f + 0.5f);
 
                     if (cid > VOICE_CMD_NONE && cid < VOICE_CMD_MAX) {
@@ -752,25 +579,19 @@ static void voice_sr_task(void *arg)
                                  voice_cmd_name((voice_cmd_t)cid));
                         ESP_LOGI(TAG, "识别原文: %s", r->string);
 
-                        /* OLED 反馈：显示识别到的中文命令词 */
+                        /* 功能：屏幕上显示认出了啥 */
                         char ui_buf[48];
                         snprintf(ui_buf, sizeof(ui_buf), "已识别:%s",
                                  voice_sr_cmd_cn((voice_cmd_t)cid));
                         voice_ui_note(ui_buf);
 
-                        /* ★★ 唯一的出口：和 ASRPRO 方案调的是同一个函数 ★★
-                         * 上层 main.c::voice_on_cmd()、MQTT、OLED、自动联动
-                         * 全都不知道这句话是怎么来的。 */
+                        /* 功能：唯一的出口 */
                         voice_dispatch((voice_cmd_t)cid);
                     } else {
                         ESP_LOGW(TAG, "识别到未知 command_id=%d，忽略", cid);
                     }
                 }
-                /* 连续命令模式（2026-10-02 用户实测反馈改）：命中一条命令后
-                 * 【不】回休眠，重置命令窗口（6 秒内可以继续说下一条），超时
-                 * 才回休眠 —— 用户说"开灯、开风扇、拉窗帘"不用每次重喊唤醒词。
-                 * 误触发风险：窗口只在真实唤醒+命中后顺延，且命令词表只有 25 条，
-                 * 电视/聊天声几乎不会连续命中，可接受。 */
+                /* 功能：认完接着听下一条 */
                 s_mn->clean(s_mn_data);
 
             } else if (mn_state == ESP_MN_STATE_TIMEOUT) {
@@ -783,13 +604,11 @@ static void voice_sr_task(void *arg)
     }
 }
 
-/* -------------------------------------------------------------------------- */
-/*  对外接口                                                                   */
-/* -------------------------------------------------------------------------- */
+/* 功能：把整套识别拉起来 */
 esp_err_t voice_esp_sr_start(void)
 {
     if (s_started) {
-        return ESP_OK;              /* 幂等 */
+        return ESP_OK;              /* 功能：开过就直接走 */
     }
 
     ESP_LOGI(TAG, "=========== 启动 ESP-SR 离线语音识别（INMP441 I²S）===========");
@@ -797,10 +616,10 @@ esp_err_t voice_esp_sr_start(void)
                   "L-R=GND / VDD=3V3",
              (int)BSP_I2S_MIC_SCK_GPIO, (int)BSP_I2S_MIC_WS_GPIO, (int)BSP_I2S_MIC_SD_GPIO);
 
-    /* ---- 0. 芯片配置体检（只打警告，不阻断）：CPU 主频/Flash/PSRAM 频率等 ---- */
+    /* 功能：先体检一下板子 */
     check_chip_config();
 
-    /* ---- 1. 麦克风 ---- */
+    /* 功能：把麦克风准备好 */
     esp_err_t err = i2s_mic_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "I²S 麦克风初始化失败 (%s)：语音识别不可用，"
@@ -809,7 +628,7 @@ esp_err_t voice_esp_sr_start(void)
         return err;
     }
 
-    /* ---- 2. 加载 model 分区里的模型 ---- */
+    /* 功能：把模型读出来 */
     s_models = esp_srmodel_init("model");
     if (s_models == NULL) {
         ESP_LOGE(TAG, "esp_srmodel_init(\"model\") 失败：model 分区没找到或没烧模型。"
@@ -823,10 +642,7 @@ esp_err_t voice_esp_sr_start(void)
         return err;
     }
 
-    /* ---- 3. 建 AFE（音频前端） ----
-     * 输入格式 "M" = 单通道麦克风：
-     *   M=麦克风 R=回放参考 N=未用。本工程只有一颗 INMP441、没有喇叭回采，
-     *   所以是单 M。参考通道（R）只在做 AEC 回声消除时才需要。 */
+    /* 功能：搭好处理流水线 */
     afe_config_t *afe_cfg = afe_config_init("M", s_models, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
     if (afe_cfg == NULL) {
         ESP_LOGE(TAG, "afe_config_init 失败");
@@ -835,32 +651,20 @@ esp_err_t voice_esp_sr_start(void)
 
     afe_cfg->wakenet_init        = true;
     afe_cfg->wakenet_model_name  = s_wn_name;
-    afe_cfg->wakenet_mode        = DET_MODE_90;   /* 90% 触发概率档：比 95% 更容易唤醒，
-                                                   * 也更易误唤醒；家居场景先求"喊得动"，
-                                                   * 觉得太灵敏再改 DET_MODE_95。 */
-    afe_cfg->aec_init            = false;         /* 没有回放参考通道，开 AEC 没意义 */
-    afe_cfg->se_init             = false;         /* 单麦没有麦克风阵列波束成形 */
-    /* ★ 2026-10-02 实测：开着 NS 时唤醒词极难触发（10 余次喊话 0~1 次命中，
-     * 且 esp-sr 自己开机就警告 "Noise Supression may reduce the accuracy
-     * of speech recognition"）。关掉 NS 后唤醒显著改善，官方 wakenet 示例
-     * 的默认配置本来就不开 NS。家居底噪由 VAD 门控 + wakenet 自身鲁棒性处理。 */
-    afe_cfg->ns_init             = false;
-    afe_cfg->vad_init            = true;          /* 静音检测：省算力，也帮助切句 */
-    afe_cfg->vad_mode            = VAD_MODE_0;    /* 最不激进的 VAD：宁可多留一点音频，
-                                                   * 不要把命令词开头吃掉 */
+    afe_cfg->wakenet_mode        = DET_MODE_90;   /* 功能：唤醒门槛调松点 */
+    afe_cfg->aec_init            = false;         /* 功能：没有回采不用消回声 */
+    afe_cfg->se_init             = false;         /* 功能：一颗麦不用定向 */
+    afe_cfg->ns_init             = false;         /* 功能：关掉降噪 */
+    afe_cfg->vad_init            = true;          /* 功能：分清说没说话 */
+    afe_cfg->vad_mode            = VAD_MODE_0;    /* 功能：判得松一点 */
     afe_cfg->afe_mode            = AFE_MODE_HIGH_PERF;
-    /* 内存分配：本板是 N16R8（8MB Octal PSRAM，80MHz），AFE 的中间缓冲
-     * 放 PSRAM 可以大幅省内部 RAM —— 内部 RAM 要留给 WiFi/BLE 协议栈和
-     * 各任务栈，这是"三个无线功能共存"最关键的一条。 */
-    afe_cfg->memory_alloc_mode   = AFE_MEMORY_ALLOC_INTERNAL_PSRAM_BALANCE;
+    afe_cfg->memory_alloc_mode   = AFE_MEMORY_ALLOC_INTERNAL_PSRAM_BALANCE;  /* 功能：缓冲放外部 */
     afe_cfg->afe_perferred_core  = VOICE_SR_TASK_CORE;
     afe_cfg->afe_perferred_priority = VOICE_SR_TASK_PRIO;
-    /* 线性增益 1.0 = 不额外放大。INMP441 的灵敏度足够，放大会同时放大底噪，
-     * 反而让 VAD 更容易误触发，所以不动它。 */
-    afe_cfg->afe_linear_gain     = 1.0f;
+    afe_cfg->afe_linear_gain     = 1.0f;          /* 功能：不额外放大 */
 
-    afe_config_check(afe_cfg);      /* 让 esp-sr 自己修正冲突项（比如单麦时的 SE） */
-    afe_config_print(afe_cfg);      /* 把最终配置打进日志 —— 排错时第一手资料 */
+    afe_config_check(afe_cfg);      /* 功能：让它自己修冲突项 */
+    afe_config_print(afe_cfg);      /* 功能：最终配置打进日志 */
 
     s_afe = esp_afe_handle_from_config(afe_cfg);
     if (s_afe == NULL) {
@@ -874,10 +678,7 @@ esp_err_t voice_esp_sr_start(void)
         return ESP_ERR_NO_MEM;
     }
 
-    /* 配置结构体的使命到此结束：create_from_config() 内部已经把需要的字段
-     * 复制/持有，官方示例的写法也是在 create 之后立刻释放。释放掉这一份
-     * 可以省下几 KB（内部 RAM 在这个工程里很宝贵）。如果哪天真发现 AFE 还
-     * 引用着它，把这两行注释掉即可 —— 最坏也只是泄漏几 KB，不影响功能。 */
+    /* 功能：配置表用完还回去 */
     afe_config_free(afe_cfg);
     afe_cfg = NULL;
 
@@ -892,7 +693,7 @@ esp_err_t voice_esp_sr_start(void)
              BSP_I2S_MIC_SAMPLE_RATE / s_feed_chunksize);
     s_afe->print_pipeline(s_afe_data);
 
-    /* feed 缓冲：优先放 PSRAM（内部 RAM 很宝贵）。必须 16bit 对齐，malloc 天然满足。 */
+    /* 功能：喂声音用的缓冲 */
     s_feed_buf = (int16_t *)heap_caps_malloc((size_t)s_feed_chunksize * sizeof(int16_t),
                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_feed_buf == NULL) {
@@ -903,14 +704,14 @@ esp_err_t voice_esp_sr_start(void)
         return ESP_ERR_NO_MEM;
     }
 
-    /* ---- 4. 建 MultiNet（命令词模型） ---- */
+    /* 功能：把认命令那块建起来 */
     s_mn = esp_mn_handle_from_name(s_mn_name);
     if (s_mn == NULL) {
         ESP_LOGE(TAG, "esp_mn_handle_from_name(\"%s\") 失败", s_mn_name);
         return ESP_FAIL;
     }
 
-    /* duration = 唤醒后等命令词的窗口（毫秒）。超时后 detect 返回 ESP_MN_STATE_TIMEOUT。 */
+    /* 功能：等命令的窗口时长 */
     s_mn_data = s_mn->create(s_mn_name, VOICE_SR_MN_DURATION_MS);
     if (s_mn_data == NULL) {
         ESP_LOGE(TAG, "MultiNet create 失败（多半是内存/PSRAM 不足）");
@@ -923,16 +724,14 @@ esp_err_t voice_esp_sr_start(void)
         return err;
     }
 
-    /* ---- 5. 起【喂帧】任务 ----
-     * ★ 必须和识别任务分成两个任务：喂帧是实时性最高的环节，不能被识别
-     *   计算、串口打印、MQTT/BLE 拖慢（详细理由见 voice_sr_feed_task 上方）。 */
+    /* 功能：起喂声音的任务 */
     if (xTaskCreatePinnedToCore(voice_sr_feed_task, "voice_feed", VOICE_SR_FEED_STACK, NULL,
                                 VOICE_SR_FEED_PRIO, &s_feed_task_h, VOICE_SR_TASK_CORE) != pdPASS) {
         ESP_LOGE(TAG, "创建喂帧任务失败");
         return ESP_ERR_NO_MEM;
     }
 
-    /* ---- 6. 起【识别】任务 ---- */
+    /* 功能：起认话的任务 */
     if (xTaskCreatePinnedToCore(voice_sr_task, "voice_sr", VOICE_SR_TASK_STACK, NULL,
                                 VOICE_SR_TASK_PRIO, NULL, VOICE_SR_TASK_CORE) != pdPASS) {
         ESP_LOGE(TAG, "创建识别任务失败");
@@ -950,26 +749,31 @@ esp_err_t voice_esp_sr_start(void)
     return ESP_OK;
 }
 
+/* 功能：看识别起来没 */
 bool voice_esp_sr_is_ready(void)
 {
     return s_ready;
 }
 
+/* 功能：看在不在等命令 */
 bool voice_esp_sr_is_awake(void)
 {
     return s_awake;
 }
 
+/* 功能：报要喊那句话 */
 const char *voice_esp_sr_wake_word(void)
 {
     return s_wake_word[0] ? s_wake_word : "(未启动)";
 }
 
+/* 功能：报命令词模型 */
 const char *voice_esp_sr_mn_model(void)
 {
     return (s_mn_name != NULL) ? s_mn_name : "(未加载)";
 }
 
+/* 功能：把命令表打出来 */
 void voice_esp_sr_print_commands(void)
 {
     printf("\n");
@@ -994,12 +798,9 @@ void voice_esp_sr_print_commands(void)
 
 #else  /* !CONFIG_APP_VOICE_SOURCE_ESP_SR */
 
-/* 开关关闭时：整个文件退化成空实现。
- * 这样 voice.c 里就可以无条件调用 voice_esp_sr_start()（由它返回
- * ESP_ERR_NOT_SUPPORTED），不必在 voice.c 里到处写 #if —— 少一层条件编译，
- * 出问题更好查。而且这一份空实现不需要 esp-sr 头文件，
- * 所以 CMakeLists 里把 esp-sr 挂成条件依赖也是安全的。 */
+/* 功能：开关关着时全是空壳 */
 
+/* 功能：没开就直说 */
 esp_err_t voice_esp_sr_start(void)
 {
     return ESP_ERR_NOT_SUPPORTED;
@@ -1007,35 +808,41 @@ esp_err_t voice_esp_sr_start(void)
 
 voice_ui_note_t g_voice_ui_note = { 0, { 0 } };
 
+/* 功能：没开就什么都不写 */
 void voice_ui_note(const char *text)
 {
-    (void)text;   /* ESP-SR 关闭时没有语音事件可提示 */
+    (void)text;   /* 功能：没事件可提示 */
 }
 
+/* 功能：没开就是没就绪 */
 bool voice_esp_sr_is_ready(void)
 {
     return false;
 }
 
+/* 功能：没开就不会醒 */
 bool voice_esp_sr_is_awake(void)
 {
     return false;
 }
 
+/* 功能：没开就没有唤醒词 */
 const char *voice_esp_sr_wake_word(void)
 {
     return "(ESP-SR 未启用)";
 }
 
+/* 功能：没开就没有模型 */
 const char *voice_esp_sr_mn_model(void)
 {
     return "(ESP-SR 未启用)";
 }
 
+/* 功能：没开就提示一句 */
 void voice_esp_sr_print_commands(void)
 {
     printf("\n  当前固件未启用 ESP-SR（menuconfig → 应用行为 → 语音识别来源）。\n"
            "  现在用的是 ASRPRO UART 方案：say <voice_cmd> 可模拟，help-voice 看指令表。\n\n");
 }
 
-#endif /* CONFIG_APP_VOICE_SOURCE_ESP_SR */
+#endif

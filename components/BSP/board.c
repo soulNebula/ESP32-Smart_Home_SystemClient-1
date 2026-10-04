@@ -1,18 +1,13 @@
-/**
- * @file  board.c
- * @brief 板级初始化 —— 按正确顺序把所有外设拉起来
+/*
+ * 模块：
+ *   板级开机准备。上电后按顺序把整块板子的硬件拉起来，被 main.c 调用，
+ *   自己向下调 i2c_bus / adc_bus / led / servo / fan / sensor /
+ *   oled / key / adkey / voice / i2s_mic 这些模块。
  *
- * 【设计原则：配件没到也能跑】
- *   每个外设单独 try，失败只打警告、不中断流程、不返回致命错误。
- *   这样你可以先烧录、先连 WiFi、先用 MQTT 和按键把业务链路跑通，
- *   等传感器/舵机/语音模块到货了插上就能用，一行代码都不用改。
- *
- * 【初始化顺序为什么是这样】
- *   I2C / ADC 是共享总线，必须最先建好；
- *   灯带(RMT) 和 舵机/风扇(LEDC) 互不干扰，顺序随意；
- *   传感器依赖 I2C + ADC，所以排在它们之后；
- *   OLED 依赖 I2C，也是之后；
- *   按键和语音最后（它们会起任务，早点起也行，但放后面日志更整齐）。
+ * 功能：
+ *   按顺序把硬件准备好
+ *   缺配件也照常开机
+ *   打印引脚对照表
  */
 #include "board.h"
 
@@ -33,14 +28,15 @@
 
 static const char *TAG = "BOARD";
 
-static bool s_inited = false;
+static bool s_inited = false;   /* 功能：记住已开机 */
 
-/* 记录各模块初始化结果，最后统一汇报，方便一眼看出"哪个配件还没插/没驱动起来" */
+/* 功能：记下各件初始化结果 */
 typedef struct {
     const char *name;
     esp_err_t   err;
 } init_result_t;
 
+/* 功能：按顺序把硬件准备好 */
 esp_err_t board_init(void)
 {
     if (s_inited) {
@@ -54,7 +50,7 @@ esp_err_t board_init(void)
     init_result_t results[14];
     int n = 0;
 
-    /* ---- 1. 共享总线 ---- */
+    /* 功能：先建共享总线 */
     results[n].name = "i2c_bus";
     results[n].err  = i2c_bus_init();
     const esp_err_t i2c_err = results[n].err;
@@ -64,7 +60,7 @@ esp_err_t board_init(void)
     results[n].err  = adc_bus_init();
     n++;
 
-    /* I2C 通了才有意义扫描，扫一遍把挂在上面的芯片列出来 */
+    /* 功能：列一下挂着谁 */
     if (i2c_err == ESP_OK) {
         int found = i2c_bus_scan();
         ESP_LOGI(TAG, "I2C scan done, %d device(s) found", found);
@@ -72,7 +68,7 @@ esp_err_t board_init(void)
         ESP_LOGW(TAG, "I2C bus init failed (0x%x), skip scan", i2c_err);
     }
 
-    /* ---- 2. 执行器 ---- */
+    /* 功能：起灯舵机风扇 */
     results[n].name = "led strip x4";
     results[n].err  = led_init();
     n++;
@@ -85,17 +81,17 @@ esp_err_t board_init(void)
     results[n].err  = fan_init();
     n++;
 
-    /* ---- 3. 传感器（依赖 I2C + ADC） ---- */
+    /* 功能：起温湿度光照雨滴 */
     results[n].name = "sensors";
     results[n].err  = sensor_init();
     n++;
 
-    /* ---- 4. 显示 ---- */
+    /* 功能：起屏幕 */
     results[n].name = "oled";
     results[n].err  = oled_init();
     n++;
 
-    /* ---- 5. 人机输入 ---- */
+    /* 功能：起按键和语音 */
     results[n].name = "key x2";
     results[n].err  = key_init();
     n++;
@@ -109,20 +105,13 @@ esp_err_t board_init(void)
     n++;
 
 #if BSP_I2S_MIC_ENABLE
-    /* ---- 6. I²S 数字麦克风（INMP441）----
-     * ★ 放在 voice 之后、且【不管语音来源开关】都初始化：
-     *   · 它的作用是"让用户能随时串口敲 `mic` 确认麦克风工作没有"。
-     *     麦克风到货后插上线就能测，不用先改 menuconfig 重新编译 ——
-     *     这正是本任务"插上就能测"的要求。
-     *   · 麦克风没接时 i2s_mic_init() 依然返回 ESP_OK（I²S 控制器和引脚是
-     *     ESP32 自己的），真正"没插"会体现在 `mic` 命令读到的电平上。
-     *     所以这一项在 reports 里正常是 [ OK ]，不代表麦克风一定接了。 */
+    /* 功能：起麦克风，没插也能测 */
     results[n].name = "i2s mic";
     results[n].err  = i2s_mic_init();
     n++;
 #endif
 
-    /* ---- 汇报 ---- */
+    /* 功能：报告各件结果 */
     int failed = 0;
     for (int i = 0; i < n; i++) {
         if (results[i].err == ESP_OK) {
@@ -134,12 +123,10 @@ esp_err_t board_init(void)
         }
     }
 
-    /* ★ 单独打一条"麦克风到底在不在拾音"的结论。
-     *   上面那行 [ OK ] 只说明 I²S 控制器建起来了，和"麦克风有没有插"无关，
-     *   容易被误读。这里真读一次看电平，把结论直接写在日志里。 */
+    /* 功能：实读一次看拾音 */
 #if BSP_I2S_MIC_ENABLE
     if (results[n - 1].err == ESP_OK) {
-        int16_t probe[320] = { 0 };     /* 20ms @16KHz */
+        int16_t probe[320] = { 0 };     /* 功能：读一小段音频 */
         size_t  got = 0;
         (void)i2s_mic_read(probe, sizeof(probe) / sizeof(probe[0]), &got, 300);
         i2s_mic_level_t lv;
@@ -165,18 +152,19 @@ esp_err_t board_init(void)
         return ESP_OK;
     }
 
-    /* 注意：返回 ESP_ERR_NOT_FOUND 并【不是】致命错误。
-     * 调用方可以继续跑 —— 缺哪个配件就只是那个功能不可用。 */
+    /* 功能：缺件不算致命 */
     ESP_LOGW(TAG, "======== board init done, %d/%d module(s) unavailable ========",
              failed, n);
     return ESP_ERR_NOT_FOUND;
 }
 
+/* 功能：交出总线把手 */
 i2c_master_bus_handle_t board_get_i2c_bus(void)
 {
     return i2c_bus_get_handle();
 }
 
+/* 功能：打印引脚对照表 */
 void board_print_pinmap(void)
 {
     ESP_LOGI(TAG, "----------------- PIN MAP (source: board_config.h) -----------------");

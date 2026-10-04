@@ -1,9 +1,14 @@
-//
-// astra_rocket.cpp
-// ESP32-S3 智能家居：astra UI 菜单树（页面层，替换 RID 接收机业务）。
-// 页面结构见 astra_rocket.h 顶部说明。字段刷新由 main 组件的 astra_glue.cpp
-// 每帧完成（组件不依赖 main，靠回调注入，依赖方向单向）。
-//
+/*
+ * 模块：
+ *   界面框架的页面层。搭出智能家居的整棵页面树（主页、自检、设备、
+ *   传感器、联动、关于），向上被 astra_glue.cpp 调着刷文字，
+ *   向下用页面类和 hal 画到屏上。
+ *
+ * 功能：
+ *   建整棵页面树
+ *   挂页面回调
+ *   跑界面主循环
+ */
 
 #include <vector>
 #include <utility>
@@ -19,7 +24,7 @@ DevicePage*    g_pageDevice   = nullptr;
 SensorPage*    g_pageSensor   = nullptr;
 AutoPage*      g_pageAuto     = nullptr;
 
-/* ---------- 注入回调（glue 设置） ---------- */
+/* 功能：存 glue 送的回调 */
 
 static void (*g_selftest_ok_cb)(int itemIndex) = nullptr;
 static void (*g_device_ok_cb)(int itemIndex)   = nullptr;
@@ -35,7 +40,7 @@ static void (*g_selftest_exit_cb)(void)  = nullptr;
 void astraSelfTestSetEnterCb(void (*cb)(void)) { g_selftest_enter_cb = cb; }
 void astraSelfTestSetExitCb(void (*cb)(void))  { g_selftest_exit_cb  = cb; }
 
-/* ---------- 磁贴图标（30×30 XBMP） ---------- */
+/* 功能：五个磁贴的图标 */
 
 static const uint8_t pic_selftest[120] = {
     0xFF, 0xFF, 0xFF, 0xFC,
@@ -202,66 +207,61 @@ static const uint8_t pic_about[120] = {
     0x00, 0x00, 0x00, 0x00
 };
 
+/* 功能：把图标转成数组 */
 static std::vector<uint8_t> pic(const uint8_t *p)
 {
     return std::vector<uint8_t>(p, p + 120);
 }
 
-/* ---------- 工具 ---------- */
+/* 功能：量这段字多宽 */
 
 static float textWidth(const std::string &_text)
 {
-    std::string t = _text;   /* HAL::getFontWidth 签名要求非 const 引用 */
+    std::string t = _text;   /* 功能：接口要非只读串 */
     return (float)HAL::getFontWidth(t);
 }
 
-/* ========================================================================= */
-/*  页面实现                                                                */
-/* ========================================================================= */
-
+/* 功能：造个开机主页 */
 HomePage::HomePage(std::string _title) : astra::Menu(std::move(_title))
 {
-    hideSelector = true;               /* 自定义渲染，无选择框 */
+    hideSelector = true;               /* 功能：这页自己画 */
     openableWhenEmpty = true;
 }
 
+/* 功能：画主页四行文字 */
 void HomePage::render(std::vector<float> _camera)
 {
-    (void)_camera;   /* 主页面固定布局，不随摄像机移动 */
+    (void)_camera;   /* 功能：这页不跟镜头动 */
     Item::updateConfig();
     HAL::setDrawType(1);
 
-    /* ★ 排版（2026-09-28 修）：原来把后三行画在 y=49 / 58 / 62，基线只差 4~9px，
-     *   而中文行高约 13px → 三行叠成一团，"除温湿度外全看不清"。
-     *   现在压成 4 行，行基线统一取自 astra::config（见 config.h 的行盒预算）：
-     *       标题(含右侧自动联动状态) / 温湿度大字号 / 光照雨滴 / 网络状态
-     *   原来的"OK 菜单"提示占了一行，已去掉 —— 64px 放不下 5 行中文。 */
+    /* 功能：四行从上往下排 */
     const astra::config &cfg = astra::getUIConfig();
 
-    /* 第 1 行：标题居中 + 右侧自动联动状态 */
+    /* 功能：第一行画标题 */
     HAL::setFont(cfg.mainFont);
     HAL::drawChinese((systemConfig.screenWeight - textWidth(title)) / 2.0f, cfg.rowTitleY, title);
     if (!autoStr.empty()) {
         HAL::drawChinese(systemConfig.screenWeight - 2 - textWidth(autoStr), cfg.rowTitleY, autoStr);
     }
 
-    /* 第 2 行：温湿度大字号（10x20_mn 数字字体） */
+    /* 功能：第二行画温湿度 */
     HAL::setFont(u8g2_font_10x20_mn);
     const std::string &t = tempHumiStr.empty() ? "--.-C --%" : tempHumiStr;
     HAL::drawEnglish((systemConfig.screenWeight - textWidth(t)) / 2.0f, cfg.rowBigY, t);
-    HAL::setFont(cfg.mainFont);   /* 恢复主字体 */
+    HAL::setFont(cfg.mainFont);   /* 功能：换回主字体 */
 
-    /* 第 3 行：光照 / 雨滴 */
+    /* 功能：第三行画光照 */
     HAL::drawChinese((systemConfig.screenWeight - textWidth(lightRainStr)) / 2.0f, cfg.row3Y,
                      lightRainStr);
-    /* 第 4 行：网络状态 */
+    /* 功能：第四行画网络 */
     HAL::drawChinese((systemConfig.screenWeight - textWidth(netStr)) / 2.0f, cfg.row4Y,
                      netStr);
 }
 
 TitleListPage::TitleListPage(std::string _title) : astra::Menu(std::move(_title))
 {
-    clipTop = astra::getUIConfig().listLineHeight;   /* 顶栏占一行 */
+    clipTop = astra::getUIConfig().listLineHeight;   /* 功能：顶栏占一行 */
 }
 
 TitleListPage::TitleListPage(std::string _title, std::vector<uint8_t> _pic)
@@ -270,18 +270,19 @@ TitleListPage::TitleListPage(std::string _title, std::vector<uint8_t> _pic)
     clipTop = astra::getUIConfig().listLineHeight;
 }
 
+/* 功能：画顶栏和列表 */
 void TitleListPage::render(std::vector<float> _camera)
 {
-    if (child.empty()) {           /* 防御：实际页面总有行 */
+    if (child.empty()) {           /* 功能：空页面兜个底 */
         astra::Menu::render(_camera);
         return;
     }
     astra::Menu::render(_camera);
     Item::updateConfig();
-    /* 顶栏：白底黑字实色条，标题居中；右侧可选状态小字 */
+    /* 功能：顶上画标题条 */
     HAL::setDrawType(1);
     HAL::drawBox(0, 0, systemConfig.screenWeight, astra::getUIConfig().listLineHeight);
-    HAL::setDrawType(0);   /* 0=清空像素：在白底上画黑字 */
+    HAL::setDrawType(0);   /* 功能：白底上写黑字 */
     HAL::drawChinese((systemConfig.screenWeight - textWidth(title)) / 2.0f,
                      2 + HAL::getFontHeight(), title);
     if (!statusStr.empty()) {
@@ -295,14 +296,16 @@ SelfTestPage::SelfTestPage(std::string _title) : TitleListPage(std::move(_title)
 {
 }
 
+/* 功能：把 OK 转给 glue */
 bool SelfTestPage::onOkKey()
 {
     if (g_selftest_ok_cb != nullptr) {
         g_selftest_ok_cb(selectIndex);
     }
-    return true;   /* OK 由页面处理，不执行 open() 导航 */
+    return true;   /* 功能：OK 这页自己管 */
 }
 
+/* 功能：进页面开自检 */
 void SelfTestPage::onEnter()
 {
     if (g_selftest_enter_cb != nullptr) {
@@ -310,6 +313,7 @@ void SelfTestPage::onEnter()
     }
 }
 
+/* 功能：离开就停自检 */
 void SelfTestPage::onExit()
 {
     if (g_selftest_exit_cb != nullptr) {
@@ -321,6 +325,7 @@ DevicePage::DevicePage(std::string _title) : TitleListPage(std::move(_title))
 {
 }
 
+/* 功能：把 OK 转给 glue */
 bool DevicePage::onOkKey()
 {
     if (g_device_ok_cb != nullptr) {
@@ -331,22 +336,21 @@ bool DevicePage::onOkKey()
 
 SensorPage::SensorPage(std::string _title) : astra::Menu(std::move(_title))
 {
-    hideSelector = true;               /* 自定义渲染，无选择框 */
+    hideSelector = true;               /* 功能：这页自己画 */
     openableWhenEmpty = true;
 }
 
+/* 功能：画四行文字 */
 void SensorPage::render(std::vector<float> _camera)
 {
     (void)_camera;
     Item::updateConfig();
     HAL::setDrawType(1);
 
-    /* 与主页共用同一套行基线（见 config.h 的"行盒预算"注释）。
-     * 原来这里是 y=34/46/56/63 再加一个 y=63 的提示 —— 后三行只差 7~10px、
-     * 提示还压在雨滴那行上，同样看不清。 */
+    /* 功能：四行从上往下排 */
     const astra::config &cfg = astra::getUIConfig();
 
-    /* 第 1 行：标题居中 + 右侧"返回"提示（提示挪上来，给下面腾行盒） */
+    /* 功能：第一行画标题 */
     HAL::setFont(cfg.mainFont);
     HAL::drawChinese((systemConfig.screenWeight - textWidth(title)) / 2.0f, cfg.rowTitleY, title);
     {
@@ -354,8 +358,7 @@ void SensorPage::render(std::vector<float> _camera)
         HAL::drawChinese(systemConfig.screenWeight - 2 - textWidth(hint), cfg.rowTitleY, hint);
     }
 
-    /* 第 2 行：温度 —— 中文标签用 wqy12、数值用 10x20 大字号。
-     * ★ 10x20_mn 里没有中文字形，整串丢给它只会把"温度"画成缺字。 */
+    /* 功能：中文字和数字分开画 */
     const std::string t = tempStr.empty() ? std::string("温度 --.-C") : tempStr;
     const size_t sp = t.find(' ');
     const std::string label = (sp == std::string::npos) ? std::string("温度") : t.substr(0, sp);
@@ -367,9 +370,9 @@ void SensorPage::render(std::vector<float> _camera)
     HAL::drawEnglish(2 + labelW + 2, cfg.rowBigY, value);
     HAL::setFont(cfg.mainFont);
 
-    /* 第 3 行：湿度 */
+    /* 功能：第三行画湿度 */
     HAL::drawChinese(2, cfg.row3Y, humiStr);
-    /* 第 4 行：光照（左） + 雨滴（右），同一个行盒里左右两段 */
+    /* 功能：第四行左右各一段 */
     HAL::drawChinese(2, cfg.row4Y, lightStr);
     if (!rainStr.empty()) {
         HAL::drawChinese(systemConfig.screenWeight - 2 - textWidth(rainStr), cfg.row4Y, rainStr);
@@ -380,12 +383,13 @@ AutoPage::AutoPage(std::string _title) : TitleListPage(std::move(_title))
 {
 }
 
+/* 功能：切联动总开关 */
 bool AutoPage::onOkKey()
 {
     if (selectIndex == 0 && g_auto_ok_cb != nullptr) {
-        g_auto_ok_cb();    /* 仅第 0 行（联动总开关）响应 OK */
+        g_auto_ok_cb();    /* 功能：只有第一行响应 */
     }
-    return true;           /* 其余行 OK 无动作 */
+    return true;           /* 功能：别行按了也白按 */
 }
 
 AboutPage::AboutPage(std::string _title, std::vector<uint8_t> _pic)
@@ -393,25 +397,22 @@ AboutPage::AboutPage(std::string _title, std::vector<uint8_t> _pic)
 {
 }
 
-/* ========================================================================= */
-/*  C 入口                                                                  */
-/* ========================================================================= */
-
+/* 功能：把界面搭起来 */
 void astraCoreInit(void) {
   HAL::inject(new AstraHALEsp32);
 
-  /* 主页面（开机页）：温湿度概览 + 网络状态，OK 进入磁贴菜单页 */
+  /* 功能：先建主页 */
   g_pageHome = new HomePage("智能家居");
 
-  /* 磁贴菜单：5 个磁贴 */
+  /* 功能：建五个磁贴 */
   rootPage->addItem(new astra::Menu("自检", pic(pic_selftest)));
   rootPage->addItem(new astra::Menu("设备控制", pic(pic_device)));
   rootPage->addItem(new astra::Menu("传感器", pic(pic_sensor)));
   rootPage->addItem(new astra::Menu("自动联动", pic(pic_auto)));
   rootPage->addItem(new astra::Menu("关于", pic(pic_about)));
-  g_pageHome->addItem(rootPage);   /* 主页 → OK → 菜单；菜单 LEFT → 返回主页 */
+  g_pageHome->addItem(rootPage);   /* 功能：主页挂菜单 */
 
-  /* 自检页：9 个测试项行（行标题由 glue 每帧刷新，当前项加 "*"） */
+  /* 功能：建自检页 */
   g_pageSelfTest = new SelfTestPage("自检");
   for (int i = 0; i < UI_SELFTEST_ITEMS; i++) {
     auto *row = new astra::Menu("-");
@@ -419,7 +420,7 @@ void astraCoreInit(void) {
   }
   rootPage->child[0]->addItem(g_pageSelfTest);
 
-  /* 设备控制页：8 行设备（"客厅灯 [开]" 等，glue 每帧刷新） */
+  /* 功能：建设备页 */
   g_pageDevice = new DevicePage("设备控制");
   for (int i = 0; i < UI_DEVICE_ITEMS; i++) {
     auto *row = new astra::Menu("-");
@@ -427,11 +428,11 @@ void astraCoreInit(void) {
   }
   rootPage->child[1]->addItem(g_pageDevice);
 
-  /* 传感器页：大字号温湿度/光照/雨滴 */
+  /* 功能：建传感器页 */
   g_pageSensor = new SensorPage("传感器");
   rootPage->child[2]->addItem(g_pageSensor);
 
-  /* 自动联动页：第 0 行总开关（OK 切换），1~6 行阈值只读 */
+  /* 功能：建联动页 */
   g_pageAuto = new AutoPage("自动联动");
   for (int i = 0; i < UI_AUTO_ITEMS; i++) {
     auto *row = new astra::Menu("-");
@@ -439,7 +440,7 @@ void astraCoreInit(void) {
   }
   rootPage->child[3]->addItem(g_pageAuto);
 
-  /* 关于页 */
+  /* 功能：建关于页 */
   auto *pageAbout = new AboutPage("关于", pic(pic_about));
   pageAbout->addItem(new astra::Menu("ESP32-S3 智能家居"));
   pageAbout->addItem(new astra::Menu("语音/按键/MQTT/BLE"));
@@ -447,16 +448,18 @@ void astraCoreInit(void) {
   pageAbout->addItem(new astra::Menu("OK 执行 LEFT 返回"));
   rootPage->child[4]->addItem(pageAbout);
 
-  /* ★ 调度器挂载根页面（漏了这行 Launcher::update() 会崩） */
+  /* 功能：把首页交给启动器 */
   astraLauncher->init(g_pageHome);
 }
 
+/* 功能：界面一直转 */
 void astraCoreStart(void) {
-  for (;;) {  //NOLINT
+  for (;;) {
     astraLauncher->update();
   }
 }
 
+/* 功能：拆掉界面 */
 void astraCoreDestroy(void) {
   HAL::destroy();
   delete astraLauncher;

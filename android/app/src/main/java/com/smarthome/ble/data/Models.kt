@@ -1,6 +1,19 @@
+/*
+ * 模块：
+ *   数据模型。把 data/Json.kt 解出来的文字，装成设备状态、设备总状态、
+ *   传感器读数、回执和阈值这些格子。字段名和包号都照 data/Contract.kt 的约定，
+ *   FrameCodec 按包的第一个字节认出是谁，再交给 SmartHomeViewModel 存起来给界面用。
+ *
+ * 功能：
+ *   存一路设备状态
+ *   存全部设备状态
+ *   存传感器读数
+ *   存回执和事件
+ *   按包号解包
+ */
 package com.smarthome.ble.data
 
-/** Per-device state as reported by the board in a 0x01 `state` frame. */
+// 功能：一路设备的开关和值
 data class DevState(
     val power: Boolean = false,
     val level: Int = 0,
@@ -9,6 +22,7 @@ data class DevState(
     val b: Int = 255,
 ) {
     companion object {
+        /* 功能：从文字读出设备 */
         fun from(o: Map<String, Any?>?): DevState = DevState(
             power = Json.boolOf(o, "power", false),
             level = Json.int(o, "level", 0).coerceIn(0, 100),
@@ -19,10 +33,7 @@ data class DevState(
     }
 }
 
-/**
- * Full state snapshot. `led_*` / `fan` / `window` / `door` / `curtain` are all
- * optional: whatever the board did not send keeps the previous value.
- */
+// 功能：板子报的全部状态
 data class StatePayload(
     val devices: Map<String, DevState> = emptyMap(),
     val auto: Boolean? = null,
@@ -33,10 +44,10 @@ data class StatePayload(
     fun dev(id: String): DevState = devices[id] ?: DevState()
 
     companion object {
-        /* ★ 之前漏了 DEV_FAN：板子上报的 state 帧里 fan 字段从不解析，
-         *   FanCard 永远显示默认值（关 / 0%）。补上。 */
+        // 功能：四路灯加风扇
         private val KNOWN_DEVICE_KEYS = Proto.LAMPS + Proto.ACTUATORS + listOf(Proto.DEV_FAN)
 
+        /* 功能：把文字变成状态 */
         fun from(o: Map<String, Any?>): StatePayload {
             val devs = LinkedHashMap<String, DevState>()
             for (key in KNOWN_DEVICE_KEYS) {
@@ -54,7 +65,7 @@ data class StatePayload(
     }
 }
 
-/** Sensor readings from a 0x02 `sensor` frame. */
+// 功能：温湿度光照雨滴
 data class SensorPayload(
     val temp: Double? = null,
     val humi: Double? = null,
@@ -66,11 +77,11 @@ data class SensorPayload(
     val rainDetected: Boolean? = null,
 ) {
     companion object {
+        /* 功能：从文字读出读数 */
         fun from(o: Map<String, Any?>): SensorPayload = SensorPayload(
             temp = Json.num(o, "temp"),
             humi = Json.num(o, "humi"),
-            // Absent is treated as valid=true only when a temperature is present;
-            // the board always sends it, but be tolerant either way.
+            // 功能：没说就当有效
             tempValid = Json.bool(o, "temp_valid") ?: (Json.num(o, "temp") != null),
             lux = Json.num(o, "lux"),
             lightPct = Json.num(o, "light_pct"),
@@ -81,14 +92,16 @@ data class SensorPayload(
     }
 }
 
-/** An `ack` (0x03) or `event` (0x04) line, kept for the log. */
+// 功能：一条回执或事件
 data class AckPayload(val action: String?, val ok: Boolean?, val detail: String?)
 
+// 功能：板子回报的阈值
 data class ConfigPayloadView(
     val raw: Map<String, Any?>,
     val cfg: ConfigPayload,
 ) {
     companion object {
+        /* 功能：从文字读出阈值 */
         fun from(o: Map<String, Any?>): ConfigPayloadView {
             val d = ConfigPayload()
             return ConfigPayloadView(
@@ -109,7 +122,7 @@ data class ConfigPayloadView(
     }
 }
 
-/** A decoded inbound frame. */
+// 功能：收到的包分几路
 sealed interface Inbound {
     data class State(val payload: StatePayload, val json: String) : Inbound
     data class Sensor(val payload: SensorPayload, val json: String) : Inbound
@@ -119,9 +132,10 @@ sealed interface Inbound {
     data class Unknown(val typeCode: Int, val json: String) : Inbound
 }
 
-/** Frame decoder: type code in byte[0], UTF-8 JSON in byte[1..]. */
+// 功能：按首字节认包
 object FrameCodec {
 
+    /* 功能：认包号分给各家 */
     fun decode(frame: ByteArray): Inbound {
         if (frame.isEmpty()) return Inbound.Unknown(-1, "")
         val type = frame[0].toInt() and 0xFF

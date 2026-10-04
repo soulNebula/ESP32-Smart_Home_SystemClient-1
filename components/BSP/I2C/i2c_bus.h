@@ -1,9 +1,14 @@
-/**
- * @file  i2c_bus.h
- * @brief I2C0 总线管理 —— OLED / SHT30 / AHT20 / BH1750 共用
+/*
+ * 模块：
+ *   I2C 总线的对外口子。屏幕、温湿度、光照都靠它读写，
+ *   被 oled.c 和 sensor.c 调用，开机时 board.c 先起它，
+ *   具体实现在 i2c_bus.c。
  *
- * 使用 ESP-IDF v5.4 的新版 I2C Master 驱动（driver/i2c_master.h），
- * 不是已废弃的 driver/i2c.h 老 API。
+ * 功能：
+ *   起总线
+ *   交出总线把手
+ *   探测某个地址
+ *   扫一遍线上有啥
  */
 #pragma once
 
@@ -15,24 +20,16 @@
 extern "C" {
 #endif
 
-/** @brief 初始化 I2C0（SDA=GPIO8, SCL=GPIO9, 400kHz），幂等 */
+/* 功能：起总线，重复调没事 */
 esp_err_t i2c_bus_init(void);
 
-/** @brief 取 I2C 总线句柄；未初始化返回 NULL */
+/* 功能：没起就返回空 */
 i2c_master_bus_handle_t i2c_bus_get_handle(void);
 
-/**
- * @brief 探测某个从机地址是否在线
- * @return ESP_OK=在线；ESP_ERR_NOT_FOUND=无应答；其它=总线错误
- */
+/* 功能：看地址在不在线 */
 esp_err_t i2c_bus_probe(uint8_t dev_addr);
 
-/**
- * @brief 扫描 0x08~0x77 全部地址并把结果打到日志
- * @return 扫描到的设备数量
- *
- * 传感器读不到数据时，先看这条日志确认地址对不对。
- */
+/* 功能：扫一遍谁在线 */
 int i2c_bus_scan(void);
 
 #ifdef __cplusplus

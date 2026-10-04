@@ -1,14 +1,13 @@
-/**
- * @file  fan.c
- * @brief 风扇调速实现（MOS 管 PWM，GPIO18，LEDC 25kHz / 10bit）
+/*
+ * 模块：
+ *   风扇。管开关和调速，被 device_model.c 调用，
+ *   自己向下用 LEDC 出波形推风扇管子；可选读转速。
  *
- * 【实现要点】
- *   1) 25kHz 超出人耳听觉范围，风扇不会"吱吱"叫；10bit → duty 0~1023。
- *   2) 0% 时 duty 真给 0（不是给 1/1023），保证完全停转。
- *   3) 测速 TACH 默认关闭（BSP_FAN_TACH_ENABLE = 0），此时 fan_get_rpm() 直接返回 0；
- *      打开后本文件用「GPIO 边沿计数窗口法」测 1 秒脉冲数，按 2 脉冲/转换算 RPM。
- *
- * 所有引脚/参数都取自 board_config.h，本文件不硬编码任何 GPIO 号。
+ * 功能：
+ *   开关风扇
+ *   调风速百分比
+ *   停转要真停住
+ *   读转速会等一秒
  */
 #include "fan.h"
 
@@ -29,32 +28,30 @@
 
 static const char *TAG = "FAN";
 
-#define FAN_FULL_SCALE  1023U   /* 2^10 - 1，对应 BSP_FAN_RES = LEDC_TIMER_10_BIT */
+#define FAN_FULL_SCALE  1023U   /* 功能：满量程按十位算 */
 
-/* 满量程是按 10bit 写死的，若 board_config.h 改了分辨率这里会立刻编译报错，
- * 提醒同步修改 FAN_FULL_SCALE，避免占空比算错 */
+/* 功能：分辨率改了要报错 */
 ESP_STATIC_ASSERT(BSP_FAN_RES == LEDC_TIMER_10_BIT, "FAN_FULL_SCALE assumes 10-bit resolution");
 
 static bool    s_inited = false;
-static uint8_t s_speed  = 0;    /* 0~100，软件记录的实际转速 */
+static uint8_t s_speed  = 0;    /* 功能：记住当前风速 */
 
-/* ------------------------------------------------------------------ */
-/*  测速（可选，默认关闭）                                             */
-/* ------------------------------------------------------------------ */
+/* 功能：读转速是选配 */
 #if BSP_FAN_TACH_ENABLE
 
-#define FAN_TACH_WINDOW_US      1000000U  /* 采样窗口 1 秒 */
-#define FAN_TACH_POLL_US        100U      /* 采样间隔 100us：1 秒窗口内 1 个脉冲也数得到（≈30RPM 分辨率） */
-#define FAN_TACH_PULSES_PER_REV 2U        /* 4 线风扇标准：每转 2 个脉冲 */
+#define FAN_TACH_WINDOW_US      1000000U  /* 功能：数一秒的脉冲 */
+#define FAN_TACH_POLL_US        100U      /* 功能：每百微秒看一次 */
+#define FAN_TACH_PULSES_PER_REV 2U        /* 功能：每转两个脉冲 */
 
 static bool s_tach_inited = false;
 
+/* 功能：把测速脚准备好 */
 static esp_err_t fan_tach_init(void)
 {
     const gpio_config_t cfg = {
         .pin_bit_mask = 1ULL << (int)BSP_FAN_GPIO_TACH,
         .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = GPIO_PULLUP_ENABLE,     /* 风扇 TACH 是开漏输出，需要上拉 */
+        .pull_up_en   = GPIO_PULLUP_ENABLE,     /* 功能：测速脚要上拉 */
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
@@ -71,12 +68,9 @@ static esp_err_t fan_tach_init(void)
     return ESP_OK;
 }
 
-#endif /* BSP_FAN_TACH_ENABLE */
+#endif /* 功能：测速开关收尾 */
 
-/* ------------------------------------------------------------------ */
-/*  对外接口                                                           */
-/* ------------------------------------------------------------------ */
-
+/* 功能：把硬件准备好 */
 esp_err_t fan_init(void)
 {
     if (s_inited) {
@@ -84,7 +78,7 @@ esp_err_t fan_init(void)
         return ESP_OK;
     }
 
-    /* ---- 定时器：25kHz / 10bit ---- */
+    /* 功能：定时器定成高频率 */
     ledc_timer_config_t tcfg = {
         .speed_mode      = BSP_FAN_MODE,
         .duty_resolution = BSP_FAN_RES,
@@ -99,14 +93,14 @@ esp_err_t fan_init(void)
         return err;
     }
 
-    /* ---- 通道 ---- */
+    /* 功能：再开出波形的通道 */
     ledc_channel_config_t ccfg = {
         .gpio_num   = BSP_FAN_GPIO_PWM,
         .speed_mode = BSP_FAN_MODE,
         .channel    = BSP_FAN_CHANNEL,
         .intr_type  = LEDC_INTR_DISABLE,
         .timer_sel  = BSP_FAN_TIMER,
-        .duty       = 0,          /* 初始停转 */
+        .duty       = 0,          /* 功能：开机先停转 */
         .hpoint     = 0,
         .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
         .flags      = { .output_invert = 0 },
@@ -125,13 +119,14 @@ esp_err_t fan_init(void)
              BSP_FAN_FREQ_HZ, (int)BSP_FAN_RES, (int)BSP_FAN_GPIO_PWM);
 
 #if BSP_FAN_TACH_ENABLE
-    /* 测速失败不影响调速：只是读不到 RPM 而已 */
+    /* 功能：测速坏了也能调速 */
     (void)fan_tach_init();
 #endif
 
     return ESP_OK;
 }
 
+/* 功能：按百分比调风速 */
 esp_err_t fan_set_speed(uint8_t percent)
 {
     if (!s_inited) {
@@ -142,7 +137,7 @@ esp_err_t fan_set_speed(uint8_t percent)
         percent = 100;
     }
 
-    /* 0 必须真给 0：完全停转（不是最小占空比） */
+    /* 功能：零就彻底停住 */
     const uint32_t duty = ((uint32_t)percent * FAN_FULL_SCALE) / 100U;
 
     esp_err_t err = ledc_set_duty(BSP_FAN_MODE, BSP_FAN_CHANNEL, duty);
@@ -162,22 +157,26 @@ esp_err_t fan_set_speed(uint8_t percent)
     return ESP_OK;
 }
 
+/* 功能：查现在多大风 */
 uint8_t fan_get_speed(void)
 {
     return s_speed;
 }
 
+/* 功能：直接把风扇关掉 */
 esp_err_t fan_off(void)
 {
     return fan_set_speed(0);
 }
 
+/* 功能：只认开和关 */
 esp_err_t fan_set_power(bool on)
 {
-    /* 兼容旧接口：true = 全速，false = 停 */
+    /* 功能：开就满速关就停 */
     return fan_set_speed(on ? 100 : 0);
 }
 
+/* 功能：查风扇转没转 */
 bool fan_get_power(void)
 {
     return s_speed > 0;
@@ -185,12 +184,8 @@ bool fan_get_power(void)
 
 #if BSP_FAN_TACH_ENABLE
 
-/**
- * @brief 测转速：1 秒窗口内数上升沿（TACH 开漏输出，需要上拉）
- * @note  会阻塞约 1 秒。每毫秒做 10 次 100us 采样，然后 vTaskDelay(1) 让出 CPU，
- *        不会长时间霸占（1ms 的空隙远小于最低转速下的脉冲周期，不会漏计数）。
- *        （更好的方案：用 PCNT 硬件计数，完全不占 CPU；driver 组件已含 pcnt。）
- */
+/* 功能：数脉冲算转速 */
+/* 功能：会卡住大约一秒 */
 uint32_t fan_get_rpm(void)
 {
     if (!s_inited || !s_tach_inited) {
@@ -202,7 +197,7 @@ uint32_t fan_get_rpm(void)
     const int64_t t0 = esp_timer_get_time();
 
     while ((esp_timer_get_time() - t0) < (int64_t)FAN_TACH_WINDOW_US) {
-        /* 1ms 采样一批（10 x 100us），采完让出 CPU 1ms */
+        /* 功能：采一批歇一小会 */
         for (int k = 0; k < (1000 / FAN_TACH_POLL_US); k++) {
             const int level = gpio_get_level(BSP_FAN_GPIO_TACH);
             if (level != 0 && last == 0) {
@@ -214,23 +209,16 @@ uint32_t fan_get_rpm(void)
         vTaskDelay(1);
     }
 
-    /* 1 秒窗口：RPM = 脉冲数 * 60 / 每转脉冲数 */
+    /* 功能：脉冲换算成转速 */
     return (uint32_t)(((uint64_t)pulses * 60ULL) / (uint64_t)FAN_TACH_PULSES_PER_REV);
 }
 
-#else  /* !BSP_FAN_TACH_ENABLE */
+#else  /* 功能：没开测速 */
 
 uint32_t fan_get_rpm(void)
 {
-    /* 测速默认关闭（board_config.h 里 BSP_FAN_TACH_ENABLE = 0），不接测速线也能正常工作。
-     *
-     * 想启用 RPM 读数：
-     *   1) 把 board_config.h 的 BSP_FAN_TACH_ENABLE 改成 1；
-     *   2) 风扇 4 线中的第 3 脚（黄线 TACH）接到 BSP_FAN_GPIO_TACH（GPIO14）；
-     *   3) 确认独立 5V 电源与开发板共地，否则测不到脉冲。
-     * 启用后本文件用 GPIO 边沿计数窗口法测 1 秒脉冲数，按 2 脉冲/转换算。
-     * （更好的方案：用 PCNT 硬件计数，完全不占 CPU；driver 组件已含 pcnt。） */
+    /* 功能：没开测速就返回零 */
     return 0;
 }
 
-#endif /* BSP_FAN_TACH_ENABLE */
+#endif /* 功能：测速开关收尾 */

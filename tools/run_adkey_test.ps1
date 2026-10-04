@@ -1,26 +1,15 @@
-# =============================================================================
-#  run_adkey_test.ps1 -- host-side unit test for the AD-key match logic
-# =============================================================================
-#  Compiles tools\adkey_test.c with a host C compiler (MinGW gcc) and runs it.
-#  No ESP-IDF and no board needed: the test includes the SAME header the
-#  firmware uses (components\BSP\ADKEY\adkey_logic.h), so it exercises the
-#  shipped thresholds.
+﻿# 模块：
+#   在电脑上把键盘判键逻辑测一遍，不用板子也不用 ESP-IDF。
+#   它把 adkey_test.c 和固件那份阈值表一起拷到英文暂存目录，
+#   用 MinGW 的 gcc 编出来跑，所以测的就是板上跑的那套判定。
+#   跑完自己打印通过几条、失败几条，退出码 0 表示全过。
+#   gcc 所在目录要先进 PATH：光给全路径它会一声不响退出，
+#   得让它自己找到同目录的配套程序。
 #
-#      powershell -ExecutionPolicy Bypass -File tools\run_adkey_test.ps1
-#
-#  Exit codes: 0 = all cases pass, 1 = compile/run failure, 2 = no compiler.
-#
-#  !! THIS FILE MUST STAY PURE ASCII !!
-#  Windows PowerShell 5.1 decodes a .ps1 with the ANSI code page (GBK here)
-#  unless the file starts with a UTF-8 BOM. Any non-ASCII byte in this file
-#  (Chinese comment, star, arrow...) therefore turns into mojibake and breaks
-#  the script. Keep it ASCII; the C test prints Chinese, which is fine because
-#  the console is switched to UTF-8 below.
-#
-#  MinGW gcc also cannot handle the Chinese path of this project, so the test
-#  source and the header under test are staged into an ASCII temp directory
-#  before compiling.
-# =============================================================================
+# 功能：
+#   暂存源码到英文目录
+#   找 gcc 编译
+#   跑测试看结果
 [CmdletBinding()]
 param(
     [string]$Cc = ''
@@ -49,7 +38,7 @@ try {
     exit 1
 }
 
-# --- locate a host compiler --------------------------------------------------
+# 功能：找一个 gcc 来用
 if (-not $Cc) {
     $cands = @(
         'C:\msys64\mingw64\bin\gcc.exe',
@@ -71,20 +60,17 @@ if (-not (Test-Path $Cc)) {
     exit 2
 }
 
-# --- console -> UTF-8 so the Chinese test output is readable -----------------
+# 功能：控制台转成中文能看
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 & "$env:SystemRoot\System32\chcp.com" 65001 | Out-Null
 
-# --- make the toolchain self-consistent --------------------------------------
-# MSYS2's gcc MUST find cc1.exe / as / ld through PATH; calling it by absolute
-# path alone makes it exit 1 with no diagnostics at all. So put its bin dir in
-# PATH first.
+# 功能：gcc 目录要先进 PATH
 $ccDir = Split-Path -Parent $Cc
 if ($ccDir -and (Test-Path $ccDir)) {
     $env:PATH = $ccDir + ';' + $env:PATH
 }
 
-# --- compile (inside the ASCII staging dir) ----------------------------------
+# 功能：在暂存目录里编译
 $ccOut = & $Cc -std=c11 -Wall -Wextra -O1 -I $stage -o $exe (Join-Path $stage 'adkey_test.c') 2>&1
 $ccRc  = $LASTEXITCODE
 if ($ccOut) { $ccOut | ForEach-Object { Write-Host "  $_" } }
@@ -96,7 +82,7 @@ Write-Host "compiler : $Cc"
 Write-Host "binary   : $exe"
 Write-Host ""
 
-# --- run --------------------------------------------------------------------
+# 功能：跑测试
 & $exe
 $rc = $LASTEXITCODE
 Write-Host ""

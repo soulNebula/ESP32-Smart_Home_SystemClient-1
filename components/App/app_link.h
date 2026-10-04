@@ -1,29 +1,16 @@
-/**
- * @file  app_link.h
- * @brief 传输链路注册表 —— 让 MQTT / BLE 共用同一套上行 JSON
+/*
+ * 模块：
+ *   上行的广播口子。要把一条消息发给手机时，只管往这里扔，它替你
+ *   发给所有连着的路（网络一条、蓝牙一条），每条路怎么发由各自的
+ *   回调决定。被 mqtt_app.c、ble_app.c 和 app_cmd.h 的实现调用；
+ *   自己不碰硬件，只调各条路登记进来的发送函数。
  *
- * ===========================================================================
- *  为什么需要这一层
- * ===========================================================================
- *  改造前，上行 JSON 是在 mqtt_app.c 里"拼 JSON + 直接 esp_mqtt_client_publish"
- *  焊死在一起的。现在手机 App 除了 MQTT 还要走 BLE，如果照抄一份 JSON 拼装
- *  逻辑，两边迟早会漂移（改了一个字段忘了另一个）。
+ *   好处是拼消息只写一份：以前网络和蓝牙各拼一套，改一个字段容易
+ *   漏掉另一边，现在两条路共用同一份内容。以后要加新路（比如网页
+ *   直连），只要写一个发送回调、开机登记一下，业务代码一行都不用动。
  *
- *  所以把这两件事拆开：
- *    · 【拼 JSON】由各 mqtt_publish_xxx() 负责，拼完调用 app_link_broadcast()
- *    · 【发出去】由各链路自己的 send() 回调负责（MQTT 发 topic，BLE 发 notify）
- *
- *  加一条新链路（比如以后加 WebSocket）只需要：
- *      1) 实现一个 app_link_t（send + is_connected）
- *      2) 开机时 app_link_register() 一下
- *  业务代码一行都不用改。
- *
- * ===========================================================================
- *  消息类型
- * ===========================================================================
- *  类型码同时用作【BLE 帧的第一个字节】，所以数值一旦定下就不能改，
- *  否则手机端会解析错位。MQTT 侧用不到类型码（它靠 topic 区分），
- *  所以 BLE 的引入【完全没有改动 MQTT 的 JSON 内容】。
+ *   消息类型那个编号同时是蓝牙帧的第一个字节，定下来就不能改，
+ *   不然手机那头会解析错位；网络这条不看编号（它按主题分）。
  */
 #pragma once
 
@@ -35,53 +22,39 @@
 extern "C" {
 #endif
 
-/** 上行消息类型 —— 数值即 BLE 帧头字节，⚠ 不可随意改动 */
+/* 功能：上行消息的种类 */
 typedef enum {
-    APP_MSG_STATE  = 1,  /**< 全设备状态（对应 MQTT <base>/state） */
-    APP_MSG_SENSOR = 2,  /**< 传感器数据（对应 <base>/sensor） */
-    APP_MSG_ACK    = 3,  /**< 命令执行结果（对应 <base>/ack） */
-    APP_MSG_EVENT  = 4,  /**< 按键/语音事件（对应 <base>/event） */
-    APP_MSG_CONFIG = 5,  /**< 联动阈值配置（对应 <base>/config） */
+    APP_MSG_STATE  = 1,  /* 功能：全部设备的状态 */
+    APP_MSG_SENSOR = 2,  /* 功能：传感器的数 */
+    APP_MSG_ACK    = 3,  /* 功能：命令的结果 */
+    APP_MSG_EVENT  = 4,  /* 功能：按键语音的事件 */
+    APP_MSG_CONFIG = 5,  /* 功能：联动的几条线 */
 } app_msg_type_t;
 
-/** 一条传输链路 */
+/* 功能：一条能发消息的路 */
 typedef struct app_link {
-    const char *name;   /**< 日志用，如 "mqtt" / "ble" */
+    const char *name;   /* 功能：路的名字，日志看 */
 
-    /**
-     * @brief 把一条 JSON 发出去
-     * @param type 消息类型（BLE 用它填帧头；MQTT 用它选 topic）
-     * @param json UTF-8 JSON 文本，以 '\0' 结尾
-     * @param len  json 的字节长度（不含结尾 '\0'）
-     * @return ESP_OK 表示已交给链路；链路自己未连接时请返回 ESP_ERR_INVALID_STATE
-     * @note 运行在调用者任务上下文（可能是 BLE 主机任务 / MQTT 任务 / app_loop）
-     */
+    /* 功能：把一条消息发出去 */
     esp_err_t (*send)(app_msg_type_t type, const char *json, size_t len);
 
-    /** @brief 该链路当前是否可用（未连接返回 false，broadcast 会跳过它） */
+    /* 功能：这条路现在通不通 */
     bool (*is_connected)(void);
 } app_link_t;
 
-/**
- * @brief 注册一条链路（表满返回 ESP_ERR_NO_MEM）
- * @note 请在任何广播发生【之前】注册完（通常在各模块 init 里）
- */
+/* 功能：登记一条路 */
 esp_err_t app_link_register(const app_link_t *link);
 
-/** @brief 注销一条链路（断开/反初始化时用） */
+/* 功能：撤销一条路 */
 esp_err_t app_link_unregister(const app_link_t *link);
 
-/**
- * @brief 把一条 JSON 广播给所有已连接链路
- * @return 成功投递的链路条数（0 = 一个都没连上，属正常情况）
- * @note 某条链路 send() 失败只记日志，不影响其它链路
- */
+/* 功能：发给所有通着的路 */
 int app_link_broadcast(app_msg_type_t type, const char *json, size_t len);
 
-/** @brief 是否至少有一条链路在线（用来判断"有没有必要拼 JSON"） */
+/* 功能：有没有一条路通着 */
 bool app_link_any_connected(void);
 
-/** @brief 类型名，日志用 */
+/* 功能：种类的名字，日志看 */
 const char *app_msg_type_name(app_msg_type_t type);
 
 #ifdef __cplusplus
