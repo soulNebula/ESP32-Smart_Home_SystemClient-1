@@ -1,13 +1,3 @@
-/*
- * 模块：
- *   对接硬件的总接口。画屏、读按键、蜂鸣器都从这儿调，被 item.cpp、
- *   launcher.cpp 用，真正的实现在 esp32 目录下的 astra_hal_esp32.cpp。
- *
- * 功能：
- *   定义画图接口
- *   定义按键接口
- *   定义延时接口
- */
 #pragma once
 #ifndef ASTRA_CORE_SRC_HAL_HAL_H_
 #define ASTRA_CORE_SRC_HAL_HAL_H_
@@ -51,7 +41,7 @@ struct config {
   uint8_t screenWeight = 128;
   uint8_t screenHeight = 64;
   float screenBright = 255;
-  /* 功能：系统参数先这些 */
+  // 系统参数先这些
 };
 
 static config &getSystemConfig() {
@@ -60,17 +50,21 @@ static config &getSystemConfig() {
 }
 }
 
-/* 功能：硬件接口总表 */
+// 硬件接口总表
 class HAL {
 private:
   static HAL *hal;
 
 public:
-  static HAL *get();    /* 功能：拿硬件实例 */
-  static bool check();  /* 功能：查有没有实例 */
+  // 拿硬件实例
+  static HAL *get();
+  // 查有没有实例
+  static bool check();
 
-  static bool inject(HAL *_hal);  /* 功能：装上实例并开跑 */
-  static void destroy();  /* 功能：把实例拆掉 */
+  // 装上实例并开跑
+  static bool inject(HAL *_hal);
+  // 把实例拆掉
+  static void destroy();
 
   virtual ~HAL() = default;
 
@@ -110,7 +104,7 @@ public:
 
   virtual uint8_t _getFontWidth(std::string &_text) { return 0; }
 
-  /* 功能：量长文用 16 位宽 */
+  // 量长文用 16 位宽
   static uint16_t getFontWidthU16(std::string &_text) { return get()->_getFontWidthU16(_text); }
 
   virtual uint16_t _getFontWidthU16(std::string &_text) { return 0; }
@@ -127,7 +121,7 @@ public:
 
   virtual void _drawPixel(float _x, float _y) {}
 
-  /* 功能：画字的坐标是左下角 */
+  // 画字的坐标是左下角
   static void drawEnglish(float _x, float _y, const std::string &_text) { get()->_drawEnglish(_x, _y, _text); }
 
   virtual void _drawEnglish(float _x, float _y, const std::string &_text) {}
@@ -194,7 +188,7 @@ public:
 
   virtual void _printInfo(std::string _msg);
 
-  /* 功能：系统时间接口 */
+  // 系统时间接口
 public:
   static void delay(unsigned long _mill) { get()->_delay(_mill); }
 
@@ -210,10 +204,10 @@ public:
 
   static unsigned long getRandomSeed() { return get()->_getRandomSeed(); }
 
-  /* 功能：这个可以不实现 */
+  // 这个可以不实现
   virtual unsigned long _getRandomSeed() { return 0; }
 
-  /* 功能：蜂鸣器接口 */
+  // 蜂鸣器接口
 public:
   static void beep(float _freq) { get()->_beep(_freq); }
 
@@ -235,7 +229,7 @@ public:
 
   virtual void _screenOff() {}
 
-  /* 功能：按键接口 */
+  // 按键接口
 public:
   static bool getKey(key::KEY_INDEX _keyIndex) { return get()->_getKey(_keyIndex); }
 
@@ -245,10 +239,10 @@ public:
 
   virtual bool _getAnyKey();
 
-  /* 功能：读按键当前动作 */
+  // 读按键当前动作
   static key::keyAction getKeyAction(key::KEY_INDEX _keyIndex) { return get()->key[_keyIndex]; }
 
-  /* 功能：清掉按键动作 */
+  // 清掉按键动作
   static void clearKeyActions() {
     for (int i = 0; i < key::KEY_NUM; i++) get()->key[i] = key::RELEASE;
   }
@@ -265,7 +259,7 @@ public:
 
   virtual void _keyTest();
 
-  /* 功能：系统参数接口 */
+  // 系统参数接口
 public:
   static sys::config &getSystemConfig() { return get()->config; }
 

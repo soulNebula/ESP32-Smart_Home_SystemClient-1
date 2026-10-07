@@ -1,18 +1,3 @@
-/*
- * 模块：
- *   麦克风采音。INMP441 走 I2S 三根线，不是 I2C，接错线只会一直没声音、
- *   不会报错；采到的声音给 voice_esp_sr.c 喂语音识别，被 board.c 开机自检
- *   和 main.c 的串口台调用，自己向下用 IDF 的 I2S 驱动。
- *
- * 功能：
- *   建通道并打开
- *   读一段单声道采样
- *   去掉直流再限幅
- *   整数算大小和分贝
- *   判断麦克风在不在
- *   打印一段波形统计
- *   读两个字才得一个采样
- */
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,69 +15,74 @@
 
 static const char *TAG = "I2S_MIC";
 
-/* 功能：可调参数 */
-#define I2S_MIC_SAMPLE_RATE     16000   /* 功能：语音识别要这个速率 */
-#define I2S_MIC_SLOT_IS_32BIT   1       /* 功能：按 32 位读再取高位 */
-#define I2S_MIC_RAW_SHIFT       14      /* 功能：右移多少位 */
+// 可调参数
+// 语音识别要这个速率
+#define I2S_MIC_SAMPLE_RATE     16000
+// 按 32 位读再取高位
+#define I2S_MIC_SLOT_IS_32BIT   1
+// 右移多少位
+#define I2S_MIC_RAW_SHIFT       14
 
-/* 功能：缓冲太小会丢帧 */
+// 缓冲太小会丢帧
 #define I2S_MIC_DMA_DESC_NUM    4
 #define I2S_MIC_DMA_FRAME_NUM   240
 
-/* 功能：看波动判断在不在 */
+// 看波动判断在不在
 #define I2S_MIC_ALIVE_PEAK2PEAK_MIN     32
 
-/* 功能：慢慢跟住直流偏置 */
+// 慢慢跟住直流偏置
 #define I2S_MIC_DC_IIR_SHIFT    8
 
-/* 功能：一次最多等这么久 */
+// 一次最多等这么久
 #define I2S_MIC_READ_TIMEOUT_MS_MAX 2000
 
-/* 功能：一次最多读这么多字 */
+// 一次最多读这么多字
 #define I2S_MIC_RAW_CHUNK       512
 
-/* 功能：内部状态变量 */
+// 内部状态变量
 static i2s_chan_handle_t s_rx_chan = NULL;
 static bool              s_inited  = false;
 
-/* 功能：跟住直流偏置 */
+// 跟住直流偏置
 static int32_t s_dc_est = 0;
 
-/* 功能：最近一次的电平快照 */
+// 最近一次的电平快照
 static i2s_mic_level_t s_level;
 
-/* 功能：原始样本中转缓冲 */
+// 原始样本中转缓冲
 static int32_t s_raw[I2S_MIC_RAW_CHUNK];
 
-/* 功能：整数开平方 */
+// 整数开平方
 static uint32_t isqrt_u32(uint32_t x)
 {
     if (x == 0) {
         return 0;
     }
-    /* 功能：先猜个大数再逼近 */
-    uint32_t r = 1u << 16;              /* 功能：从最大数往下试 */
+    // 先猜个大数再逼近
+    // 从最大数往下试
+    uint32_t r = 1u << 16;
     while (r > 0 && r > x / r) {
         r >>= 1;
     }
-    /* 功能：再迭代几轮算准 */
+    // 再迭代几轮算准
     for (int i = 0; i < 6; i++) {
         if (r == 0) {
             break;
         }
         r = (r + x / r) / 2;
     }
-    /* 功能：修掉最后一点误差 */
+    // 修掉最后一点误差
     while (r > 0 && r > x / r) { r--; }
     while ((r + 1) <= x / (r + 1)) { r++; }
     return r;
 }
 
-/* 功能：整数算对数 */
+// 整数算对数
 static int32_t log2_q8(uint32_t v)
 {
     if (v == 0) {
-        return INT32_MIN;       /* 功能：零上面已经挡过 */
+        // 零上面已经挡过
+        return INT32_MIN;
     }
 
     int32_t e = 0;
@@ -101,10 +91,12 @@ static int32_t log2_q8(uint32_t v)
         e++;
     }
 
-    uint32_t m = v;             /* 功能：把数归到一到二之间 */
+    // 把数归到一到二之间
+    uint32_t m = v;
     int32_t frac = 0;
     for (int i = 0; i < 8; i++) {
-        m = (m * m) >> 16;      /* 功能：平方一次取一位 */
+        // 平方一次取一位
+        m = (m * m) >> 16;
         frac <<= 1;
         if (m >= 2u * 65536u) {
             m >>= 1;
@@ -114,7 +106,7 @@ static int32_t log2_q8(uint32_t v)
     return (e << 8) + frac;
 }
 
-/* 功能：一趟采样的统计本 */
+// 一趟采样的统计本
 typedef struct {
     int32_t min;
     int32_t max;
@@ -124,7 +116,7 @@ typedef struct {
     size_t  clip;
 } mic_stat_t;
 
-/* 功能：把统计清零 */
+// 把统计清零
 static void mic_stat_reset(mic_stat_t *st)
 {
     st->min    = INT32_MAX;
@@ -135,18 +127,18 @@ static void mic_stat_reset(mic_stat_t *st)
     st->clip   = 0;
 }
 
-/* 功能：转成十六位并记账 */
+// 转成十六位并记账
 static void i2s_mic_accumulate(const int32_t *raw, size_t n, mic_stat_t *st, int16_t *out)
 {
     for (size_t i = 0; i < n; i++) {
-        /* 功能：右移取高位 */
+        // 右移取高位
         int32_t v = (int32_t)(raw[i] >> I2S_MIC_RAW_SHIFT);
 
-        /* 功能：减直流，别向下取整 */
+        // 减直流，别向下取整
         s_dc_est += (v - s_dc_est + (1 << (I2S_MIC_DC_IIR_SHIFT - 1))) >> I2S_MIC_DC_IIR_SHIFT;
         v -= s_dc_est;
 
-        /* 功能：太大就削平防溢出 */
+        // 太大就削平防溢出
         if (v > I2S_MIC_FULL_SCALE) {
             v = I2S_MIC_FULL_SCALE;
             st->clip++;
@@ -169,11 +161,11 @@ static void i2s_mic_accumulate(const int32_t *raw, size_t n, mic_stat_t *st, int
     }
 }
 
-/* 功能：算大小和分贝 */
+// 算大小和分贝
 static void i2s_mic_level_update(const mic_stat_t *st, size_t samples)
 {
     if (samples == 0) {
-        /* 功能：没读到就只记次数 */
+        // 没读到就只记次数
         s_level.read_count++;
         return;
     }
@@ -188,31 +180,34 @@ static void i2s_mic_level_update(const mic_stat_t *st, size_t samples)
     s_level.clip         = (uint32_t)st->clip;
     s_level.read_count++;
 
-    /* 功能：把峰值折成分贝 */
+    // 把峰值折成分贝
     if (st->peak > 0) {
         const int32_t l2_peak    = log2_q8((uint32_t)st->peak);
-        const int32_t l2_fs      = log2_q8(32768u);          /* 功能：满量程的对数值 */
-        const int32_t diff_q8    = l2_peak - l2_fs;          /* 功能：比满量程小就是负 */
+        // 满量程的对数值
+        const int32_t l2_fs      = log2_q8(32768u);
+        // 比满量程小就是负
+        const int32_t diff_q8    = l2_peak - l2_fs;
         s_level.db_x10 = (int)((diff_q8 * 47) / 100);
     } else {
         s_level.db_x10 = -9990;
     }
 }
 
-/* 功能：把麦克风通道打开 */
+// 把麦克风通道打开
 esp_err_t i2s_mic_init(void)
 {
-    /* 功能：开过就不再重开 */
+    // 开过就不再重开
     if (s_inited) {
         return ESP_OK;
     }
 
-    /* 功能：建一个只收的通道 */
+    // 建一个只收的通道
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
-    /* 功能：缓冲少一点省内存 */
+    // 缓冲少一点省内存
     chan_cfg.dma_desc_num  = I2S_MIC_DMA_DESC_NUM;
     chan_cfg.dma_frame_num = I2S_MIC_DMA_FRAME_NUM;
-    chan_cfg.auto_clear    = true;   /* 功能：没数据就填零 */
+    // 没数据就填零
+    chan_cfg.auto_clear    = true;
 
     esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &s_rx_chan);
     if (err != ESP_OK) {
@@ -222,7 +217,7 @@ esp_err_t i2s_mic_init(void)
         return err;
     }
 
-    /* 功能：配成单声道十六千赫 */
+    // 配成单声道十六千赫
 #if I2S_MIC_SLOT_IS_32BIT
     const i2s_data_bit_width_t slot_bits = I2S_DATA_BIT_WIDTH_32BIT;
 #else
@@ -233,11 +228,16 @@ esp_err_t i2s_mic_init(void)
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(I2S_MIC_SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(slot_bits, I2S_SLOT_MODE_MONO),
         .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,            /* 功能：它不用主时钟 */
-            .bclk = BSP_I2S_MIC_SCK_GPIO,       /* 功能：位时钟脚 */
-            .ws   = BSP_I2S_MIC_WS_GPIO,        /* 功能：声道同步脚 */
-            .dout = I2S_GPIO_UNUSED,            /* 功能：只收不发 */
-            .din  = BSP_I2S_MIC_SD_GPIO,        /* 功能：数据线 */
+            // 它不用主时钟
+            .mclk = I2S_GPIO_UNUSED,
+            // 位时钟脚
+            .bclk = BSP_I2S_MIC_SCK_GPIO,
+            // 声道同步脚
+            .ws   = BSP_I2S_MIC_WS_GPIO,
+            // 只收不发
+            .dout = I2S_GPIO_UNUSED,
+            // 数据线
+            .din  = BSP_I2S_MIC_SD_GPIO,
             .invert_flags = {
                 .mclk_inv = false,
                 .bclk_inv = false,
@@ -254,8 +254,8 @@ esp_err_t i2s_mic_init(void)
         return err;
     }
 
-    /* 功能：开了它才吐数据 */
-    /* 功能：头五十毫秒是垃圾 */
+    // 开了它才吐数据
+    // 头五十毫秒是垃圾
     err = i2s_channel_enable(s_rx_chan);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2s_channel_enable failed: %s", esp_err_to_name(err));
@@ -276,7 +276,7 @@ esp_err_t i2s_mic_init(void)
     return ESP_OK;
 }
 
-/* 功能：读一段单声道采样 */
+// 读一段单声道采样
 esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t timeout_ms)
 {
     if (out_read != NULL) {
@@ -292,7 +292,7 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
         timeout_ms = I2S_MIC_READ_TIMEOUT_MS_MAX;
     }
 
-    /* 功能：超时按总预算切段 */
+    // 超时按总预算切段
     const int64_t t_start   = esp_timer_get_time();
     const int64_t budget_us = (int64_t)timeout_ms * 1000LL;
 
@@ -303,21 +303,23 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
     esp_err_t err = ESP_OK;
 
     while (got < samples) {
-        /* 功能：一次读两倍字再抽 */
+        // 一次读两倍字再抽
         size_t want = samples - got;
         if (want > I2S_MIC_RAW_CHUNK / 2) {
             want = I2S_MIC_RAW_CHUNK / 2;
         }
-        const size_t want_raw = want * 2;   /* 功能：字数是采样两倍 */
+        // 字数是采样两倍
+        const size_t want_raw = want * 2;
 
-        TickType_t wait_ticks = 0;      /* 功能：零就是不等待 */
+        // 零就是不等待
+        TickType_t wait_ticks = 0;
         if (budget_us > 0) {
             const int64_t left_us = budget_us - (esp_timer_get_time() - t_start);
             if (left_us <= 0) {
                 err = ESP_ERR_TIMEOUT;
                 break;
             }
-            /* 功能：至少等一拍 */
+            // 至少等一拍
             wait_ticks = pdMS_TO_TICKS((uint32_t)((left_us + 999) / 1000));
             if (wait_ticks == 0) {
                 wait_ticks = 1;
@@ -327,7 +329,7 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
         size_t bytes_read = 0;
         err = i2s_channel_read(s_rx_chan, s_raw, want_raw * sizeof(int32_t), &bytes_read, wait_ticks);
         if (err != ESP_OK) {
-            /* 功能：超时不算错，往上抛 */
+            // 超时不算错，往上抛
             break;
         }
 
@@ -337,7 +339,7 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
             break;
         }
 
-        /* 功能：只留麦克风那半时隙 */
+        // 只留麦克风那半时隙
         size_t nd = 0;
         for (size_t i = 0; i + 1 < n; i += 2) {
             s_raw[nd++] = s_raw[i];
@@ -354,7 +356,7 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
     i2s_mic_level_update(&st, got);
 
     if (got > 0 && st.clip > 0) {
-        /* 功能：削顶多了就提醒 */
+        // 削顶多了就提醒
         static int64_t s_last_clip_log_us = 0;
         const int64_t now = esp_timer_get_time();
         if (now - s_last_clip_log_us > 5000000LL) {
@@ -370,7 +372,7 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
         *out_read = got;
     }
 
-    /* 功能：读满就算成功 */
+    // 读满就算成功
     if (got == samples) {
         return ESP_OK;
     }
@@ -382,24 +384,25 @@ void i2s_mic_read_level(i2s_mic_level_t *out)
     if (out == NULL) {
         return;
     }
-    /* 功能：不加锁，快照够用 */
+    // 不加锁，快照够用
     *out = s_level;
 }
 
-/* 功能：看麦克风在不在 */
+// 看麦克风在不在
 bool i2s_mic_is_ready(void)
 {
     if (!s_inited || s_rx_chan == NULL) {
         return false;
     }
     if (s_level.read_count == 0) {
-        return false;       /* 功能：一次都没读到 */
+        // 一次都没读到
+        return false;
     }
-    /* 功能：看波动大小判断 */
+    // 看波动大小判断
     return (s_level.peak_to_peak > I2S_MIC_ALIVE_PEAK2PEAK_MIN);
 }
 
-/* 功能：采一段打印统计 */
+// 采一段打印统计
 void i2s_mic_dump(int seconds)
 {
     if (!s_inited || s_rx_chan == NULL) {
@@ -414,7 +417,8 @@ void i2s_mic_dump(int seconds)
     printf("  [mic] 判据：安静时 rms 几十~几百 且 min/max 在动 = 麦在工作；\n");
     printf("  [mic]       整行全 0 = 没接；min=max 恒定 = 时序/声道接错\n");
 
-    const size_t chunk = 8000;      /* 功能：这是半秒的点数 */
+    // 这是半秒的点数
+    const size_t chunk = 8000;
     int16_t *buf = (int16_t *)malloc(chunk * sizeof(int16_t));
     if (buf == NULL) {
         printf("  [mic] 内存不足，dump 取消\n");

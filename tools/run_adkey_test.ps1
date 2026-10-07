@@ -1,16 +1,4 @@
-﻿# 模块：
-#   在电脑上把键盘判键逻辑测一遍，不用板子也不用 ESP-IDF。
-#   它把 adkey_test.c 和固件那份阈值表一起拷到英文暂存目录，
-#   用 MinGW 的 gcc 编出来跑，所以测的就是板上跑的那套判定。
-#   跑完自己打印通过几条、失败几条，退出码 0 表示全过。
-#   gcc 所在目录要先进 PATH：光给全路径它会一声不响退出，
-#   得让它自己找到同目录的配套程序。
-#
-# 功能：
-#   暂存源码到英文目录
-#   找 gcc 编译
-#   跑测试看结果
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Cc = ''
 )
@@ -38,7 +26,7 @@ try {
     exit 1
 }
 
-# 功能：找一个 gcc 来用
+# 找一个 gcc 来用
 if (-not $Cc) {
     $cands = @(
         'C:\msys64\mingw64\bin\gcc.exe',
@@ -60,17 +48,17 @@ if (-not (Test-Path $Cc)) {
     exit 2
 }
 
-# 功能：控制台转成中文能看
+# 控制台转成中文能看
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 & "$env:SystemRoot\System32\chcp.com" 65001 | Out-Null
 
-# 功能：gcc 目录要先进 PATH
+# gcc 目录要先进 PATH
 $ccDir = Split-Path -Parent $Cc
 if ($ccDir -and (Test-Path $ccDir)) {
     $env:PATH = $ccDir + ';' + $env:PATH
 }
 
-# 功能：在暂存目录里编译
+# 在暂存目录里编译
 $ccOut = & $Cc -std=c11 -Wall -Wextra -O1 -I $stage -o $exe (Join-Path $stage 'adkey_test.c') 2>&1
 $ccRc  = $LASTEXITCODE
 if ($ccOut) { $ccOut | ForEach-Object { Write-Host "  $_" } }
@@ -82,7 +70,7 @@ Write-Host "compiler : $Cc"
 Write-Host "binary   : $exe"
 Write-Host ""
 
-# 功能：跑测试
+# 跑测试
 & $exe
 $rc = $LASTEXITCODE
 Write-Host ""

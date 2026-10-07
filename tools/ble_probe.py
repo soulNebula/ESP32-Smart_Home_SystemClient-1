@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-模块：
+
   电脑上的蓝牙探针。手机 App 没装或者出问题时，用它当参照物，
   判断毛病在板子还是在 App。脚本用电脑蓝牙直接连板子，
   把服务、收发格式、推送、包长全验一遍，做的事和手机 App 一样：
@@ -17,7 +17,7 @@
   固件已把栈加到 8192 并加了自检。所以看到连接莫名断开，先怀疑板子重启，
   别怪写类型选错了。
 
-功能：
+
   扫板子
   连上核对服务
   发命令收数据
@@ -29,7 +29,7 @@ import asyncio
 import sys
 import time
 
-# 功能：让中文不乱码
+# 让中文不乱码
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -42,27 +42,29 @@ except ImportError:
     print("[FAIL] 没装 bleak。请先执行：pip install bleak")
     sys.exit(2)
 
-# 功能：收发用的固定编号
+# 收发用的固定编号
 SERVICE_UUID = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
-RX_CHAR_UUID = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5e"   # 手机 → 板子
-TX_CHAR_UUID = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5f"   # 板子 → 手机
+# 手机 → 板子
+RX_CHAR_UUID = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5e"
+# 板子 → 手机
+TX_CHAR_UUID = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5f"
 NAME_PREFIX = "SmartHome-"
 
-# 功能：每帧开头写类型码
+# 每帧开头写类型码
 DOWN_CMD, DOWN_CONFIG, DOWN_GET = 0x01, 0x02, 0x03
 UP_NAMES = {0x01: "state", 0x02: "sensor", 0x03: "ack", 0x04: "event", 0x05: "config"}
 
-# 功能：一包装不下，要放大包长
+# 一包装不下，要放大包长
 MTU_MIN_NEEDED = 256
 
 
 def make_frame(type_code: int, payload: str = "") -> bytes:
-    """功能：类型码加内容拼一帧"""
+    """类型码加内容拼一帧"""
     return bytes([type_code]) + payload.encode("utf-8")
 
 
 def split_frame(data: bytes):
-    """功能：跳过帧头拿出内容"""
+    """跳过帧头拿出内容"""
     if not data:
         return None, ""
     return data[0], data[1:].decode("utf-8", errors="replace")
@@ -85,7 +87,7 @@ def section(title: str):
     print("=" * 68)
 
 
-# 功能：找板子
+# 找板子
 async def do_scan(timeout: float, want_all: bool) -> list:
     section(f"扫描 BLE 设备（{timeout:.0f} 秒）...")
     found = await BleakScanner.discover(timeout=timeout, return_adv=True)
@@ -94,7 +96,7 @@ async def do_scan(timeout: float, want_all: bool) -> list:
     for device, adv in found.values():
         name = adv.local_name or device.name or ""
 
-        # 功能：名字和服务号都能认
+        # 名字和服务号都能认
         svc_uuids = [str(u).lower() for u in (adv.service_uuids or [])]
         by_name = name.startswith(NAME_PREFIX)
         by_uuid = SERVICE_UUID.lower() in svc_uuids
@@ -124,7 +126,7 @@ async def do_scan(timeout: float, want_all: bool) -> list:
 
 
 async def pick_device(args):
-    """功能：按名字或地址挑板子"""
+    """按名字或地址挑板子"""
     if args.address:
         print(f"按地址直连：{args.address}")
         return args.address
@@ -147,12 +149,13 @@ async def pick_device(args):
     return targets[0]
 
 
-# 功能：连上并自检
+# 连上并自检
 class Probe:
     def __init__(self, verbose: bool = True):
         self.client = None
         self.verbose = verbose
-        self.frames = []          # 收到的 (类型码, 文本, 时间戳)
+        # 收到的 (类型码, 文本, 时间戳)
+        self.frames = []
         self.got = asyncio.Event()
 
     def on_notify(self, _sender, data: bytearray):
@@ -168,7 +171,7 @@ class Probe:
         await self.client.connect()
         print(f"  已连接: {device if isinstance(device, str) else device.address}")
 
-        # 功能：Windows 自己谈包长
+        # Windows 自己谈包长
         mtu = getattr(self.client, "mtu_size", None)
         print(f"  协商 MTU = {mtu}")
         if isinstance(mtu, int):
@@ -178,7 +181,7 @@ class Probe:
             else:
                 print(f"  [OK]   MTU 足够（可用载荷约 {mtu - 3} 字节）")
 
-        # 功能：数一遍服务，对编号
+        # 数一遍服务，对编号
         section("GATT 服务核对")
         want_svc = SERVICE_UUID.lower()
         want_rx = RX_CHAR_UUID.lower()
@@ -212,7 +215,7 @@ class Probe:
         if not have_rx:
             print(f"  [WARN] 没找到 RX 特征 {RX_CHAR_UUID}（发命令用）")
 
-        # 功能：订上，板子推消息
+        # 订上，板子推消息
         section("订阅 TX 通知")
         await self.client.start_notify(TX_CHAR_UUID, self.on_notify)
         print("  [OK]   已订阅。接下来板子推的消息会实时打印：")
@@ -223,7 +226,7 @@ class Probe:
         kind = {DOWN_CMD: "cmd", DOWN_CONFIG: "config", DOWN_GET: "get"}.get(type_code, "?")
         print(f"  → 发送 [{kind}] 帧长 {len(frame)} 字节：{payload or '(空)'}")
 
-    # 功能：发一条命令
+    # 发一条命令
         use_response = len(frame) > 20
         await self.client.write_gatt_char(RX_CHAR_UUID, frame, response=use_response)
 
@@ -246,7 +249,7 @@ class Probe:
             print("  已断开")
 
 
-# 功能：几条子命令
+# 几条子命令
 async def cmd_test(args):
     device = await pick_device(args)
     if device is None:

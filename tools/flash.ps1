@@ -1,17 +1,4 @@
-﻿# 模块：
-#   可靠烧录。这块板子用普通烧录会失败：大镜像写进去了但校验不过，
-#   板子反复重启。实测发现只要先整片擦除再写就一定能过，
-#   所以脚本改成不压缩写入，校验失败就自动擦一次重写。
-#   它跟编译烧录脚本 build.ps1 是同一件事的两条路，向下调 esptool。
-#   动手之前只看端口列表，不打开端口试，免得把别人的烧录搅了。
-#
-# 功能：
-#   检查镜像文件在不在
-#   不压缩写进板子
-#   失败就擦片重试
-#   打印校验结果
-
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string] $Port     = 'COM31',
     [int]    $Baud     = 460800,
@@ -34,7 +21,7 @@ Say "    build dir : $BuildDir"
 Say "    force erase: $(if ($Erase) { 'YES' } else { 'no (auto-retry if verify fails)' })"
 Say ""
 
-# 功能：先确认镜像都在
+# 先确认镜像都在
 $flashArgs = Join-Path $BuildDir 'flash_args'
 if (-not (Test-Path $flashArgs)) {
     Say "[FAIL] $flashArgs not found." Red
@@ -55,7 +42,7 @@ foreach ($m in $images) {
 }
 Say ""
 
-# 功能：找带 esptool 的 Python
+# 找带 esptool 的 Python
 $pyCandidates = @(
     'E:\Espressif\python_env\idf5.4_py3.11_env\Scripts\python.exe',
     (Join-Path $env:IDF_TOOLS_PATH 'python_env\idf5.4_py3.11_env\Scripts\python.exe')
@@ -73,7 +60,7 @@ if (-not $py) {
 Say "  python    : $py"
 Say ""
 
-# 功能：只读端口列表
+# 只读端口列表
 $busy = @(Get-Process -Name python -ErrorAction SilentlyContinue)
 if ($busy.Count -gt 0) {
     Say "[WARN] other python processes are running - is something else flashing?" Yellow
@@ -90,7 +77,7 @@ if ($ports -notcontains $Port) {
 }
 Say ""
 
-# 功能：写入，失败就擦片重来
+# 写入，失败就擦片重来
 $attempts = if ($Erase) { @($true) } else { @($false, $true) }
 $code = 0; $hashN = 0; $fatal = $false
 $out = @(); $usedErase = $false; $ok = $false
@@ -141,7 +128,7 @@ finally {
     Pop-Location
 }
 
-# 功能：最后给个结论
+# 最后给个结论
 Say ""
 if ($ok) {
     Say ("=== FLASH OK : {0}/5 images verified{1} ===" -f `

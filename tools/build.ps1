@@ -1,33 +1,19 @@
-﻿# 模块：
-#   编译烧录看日志。在 Windows 上把代码编出来、烧进板子、看串口输出。
-#   本工程的文件夹名带中文，ESP-IDF 碰到中文路径会在三处直接崩：
-#   读配置、编译缓存、链接，所以脚本先把源码镜像一份到英文目录，
-#   在那儿编译，编完再把 sdkconfig 带回来。用 subst 映射盘符没用，实测过。
-#   它向下调 idf.py 干活，串口日志看 monitor.ps1。
-#   -Task build,flash 这种写法传进来是一整个字符串，不拆的话 idf.py 认不出，
-#   老命令就栽在这，所以脚本按逗号再拆一次，而且必须赶在展开数组之前做。
-#
-# 功能：
-#   镜像源码到英文目录
-#   自动找到 ESP-IDF
-#   跑 idf.py 编译烧录
-#   带回 sdkconfig
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
-    # 功能：要干几件事
-    # 功能：也能一次给多个
+    # 要干几件事
+    # 也能一次给多个
     [string[]]$Task = @('build'),
 
-    # 功能：英文镜像目录
+    # 英文镜像目录
     [string]$Mirror = 'C:\esp32_smart_home',
 
-    # 功能：手动指定 IDF 路径
+    # 手动指定 IDF 路径
     [string]$IdfPath = '',
 
-    # 功能：手动指定工具目录
+    # 手动指定工具目录
     [string]$ToolsPath = '',
 
-    # 功能：额外参数原样传
+    # 额外参数原样传
     [string[]]$ExtraArgs = @()
 )
 
@@ -43,11 +29,11 @@ function Test-Ascii([string]$s) {
     return $true
 }
 
-# 功能：项目根就是脚本上一层
+# 项目根就是脚本上一层
 $projectDir = (Get-Item (Split-Path -Parent $PSScriptRoot)).FullName
 Write-Step "Source project : $projectDir"
 
-# 功能：定下在哪儿编译
+# 定下在哪儿编译
 $buildRoot = $projectDir
 $usingMirror = $false
 
@@ -67,9 +53,9 @@ if (-not (Test-Ascii $projectDir)) {
     }
 
     Write-Step '1) robocopy source -> mirror (excluding build/, logs)'
-    # 功能：连空目录一起拷
-    # 功能：跳过 build 保缓存
-    # 功能：日志文件不拷
+    # 连空目录一起拷
+    # 跳过 build 保缓存
+    # 日志文件不拷
     robocopy $projectDir $Mirror /E /XD build /XF build_log.txt build_log_ascii.txt build_log_subst.txt /NFL /NDL /NJH /NJS /NP | Out-Null
     $rc = $LASTEXITCODE
     if ($rc -ge 8) {
@@ -78,7 +64,7 @@ if (-not (Test-Ascii $projectDir)) {
     }
     Write-Ok "sources synced (robocopy exit $rc)"
 
-    # 功能：把配置带进镜像
+    # 把配置带进镜像
     if (Test-Path (Join-Path $projectDir 'sdkconfig')) {
         Copy-Item (Join-Path $projectDir 'sdkconfig') (Join-Path $Mirror 'sdkconfig') -Force
         Write-Ok 'sdkconfig copied into the mirror'
@@ -90,7 +76,7 @@ if (-not (Test-Ascii $projectDir)) {
     Write-Ok 'Project path is pure ASCII - building in place.'
 }
 
-# 功能：找一个 IDF 来用
+# 找一个 IDF 来用
 if (-not $IdfPath) {
     $cand = @()
     if ($env:IDF_PATH) { $cand += $env:IDF_PATH }
@@ -116,7 +102,7 @@ if (-not $IdfPath -or -not (Test-Path (Join-Path $IdfPath 'tools\idf.py'))) {
 }
 Write-Ok "IDF_PATH = $IdfPath"
 
-# 功能：找工具目录并启用
+# 找工具目录并启用
 if (-not $ToolsPath) {
     if ($env:IDF_TOOLS_PATH -and (Test-Path (Join-Path $env:IDF_TOOLS_PATH 'python_env'))) {
         $ToolsPath = $env:IDF_TOOLS_PATH
@@ -172,23 +158,23 @@ foreach ($c in 'idf.py', 'cmake', 'ninja', 'riscv32-esp-elf-gcc') {
     if ($g) { Write-Ok "$c -> $($g.Source)" } else { Write-Warn "$c not found" }
 }
 
-# 功能：在编译目录跑命令
+# 在编译目录跑命令
 Set-Location $buildRoot
 
-# 功能：中文路径就关编译缓存
+# 中文路径就关编译缓存
 $idfArgs = @()
 if (-not (Test-Ascii $buildRoot)) { $idfArgs += '--no-ccache' }
 $idfArgs += $Task
 if ($ExtraArgs.Count -gt 0) { $idfArgs += $ExtraArgs }
 
-# 功能：按逗号拆成两个参数
+# 按逗号拆成两个参数
 $idfArgs = @($idfArgs | ForEach-Object { $_ -split ',' } | Where-Object { $_ -ne '' })
 
 Write-Step "2) idf.py $($idfArgs -join ' ')   (in $buildRoot)"
 & idf.py @idfArgs
 $code = $LASTEXITCODE
 
-# 功能：收回配置改动
+# 收回配置改动
 if ($usingMirror) {
     $mirrorCfg = Join-Path $Mirror 'sdkconfig'
     if (Test-Path $mirrorCfg) {

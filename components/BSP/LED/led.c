@@ -1,15 +1,3 @@
-/*
- * 模块：
- *   灯带。管客厅、厨房、卧室、浴室四路灯，还管板上一颗状态小灯。
- *   被 device_model.c 和 main.c 调用，向上给房间开关/亮度/颜色，
- *   自己向下调 ws2812 产生灯珠时序。
- *
- * 功能：
- *   开关某路灯
- *   调亮度和颜色
- *   整批一起刷新防闪
- *   状态灯报网况
- */
 #include "led.h"
 
 #include <stdbool.h>
@@ -20,28 +8,34 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "ws2812.h"
-#include "driver/ledc.h"   /* 功能：普通 LED 用调光 */
+// 普通 LED 用调光
+#include "driver/ledc.h"
 
-/* 功能：检查后端开关取值 */
+// 检查后端开关取值
 #if (BSP_LED_BACKEND_WS2812 != 0) && (BSP_LED_BACKEND_WS2812 != 1)
 #error "BSP_LED_BACKEND_WS2812 must be 0 or 1"
 #endif
 
 static const char *TAG = "LED";
 
-/* 功能：核对分区数量 */
+// 核对分区数量
 ESP_STATIC_ASSERT(LED_ZONE_MAX == BSP_LED_ZONE_COUNT, "LED_ZONE_MAX must match BSP_LED_ZONE_COUNT");
 
-/* 功能：存一路灯的当前状态 */
+// 存一路灯的当前状态
 typedef struct {
-    ws2812_strip_handle_t h;           /* 功能：这路灯带的句柄 */
-    bool     power;                    /* 功能：开着还是关着 */
-    uint8_t  brightness;               /* 功能：亮度 0 到 100 */
-    uint8_t  r, g, b;                  /* 功能：记住的颜色 */
-    bool     inited;                   /* 功能：这路是否接上 */
+    // 这路灯带的句柄
+    ws2812_strip_handle_t h;
+    // 开着还是关着
+    bool     power;
+    // 亮度 0 到 100
+    uint8_t  brightness;
+    // 记住的颜色
+    uint8_t  r, g, b;
+    // 这路是否接上
+    bool     inited;
 } led_zone_ctx_t;
 
-/* 功能：四个房间的初始状态 */
+// 四个房间的初始状态
 static led_zone_ctx_t s_zone[LED_ZONE_MAX] = {
     [LED_ZONE_LIVING]  = { .h = NULL, .power = false, .brightness = 100, .r = 255, .g = 255, .b = 255, .inited = false },
     [LED_ZONE_KITCHEN] = { .h = NULL, .power = false, .brightness = 100, .r = 255, .g = 255, .b = 255, .inited = false },
@@ -49,7 +43,7 @@ static led_zone_ctx_t s_zone[LED_ZONE_MAX] = {
     [LED_ZONE_BATH]    = { .h = NULL, .power = false, .brightness = 100, .r = 255, .g = 255, .b = 255, .inited = false },
 };
 
-/* 功能：对照板级表找引脚 */
+// 对照板级表找引脚
 static const struct {
     gpio_num_t gpio;
     uint32_t   led_num;
@@ -60,12 +54,12 @@ static const struct {
     [LED_ZONE_BATH]    = { BSP_WS2812_GPIO_BATH,    BSP_WS2812_LED_NUM_BATH    },
 };
 
-/* 功能：给房间起英文名 */
+// 给房间起英文名
 static const char *const s_zone_name[LED_ZONE_MAX] = { "living", "kitchen", "bedroom", "bath" };
 
 static bool s_inited = false;
 
-/* 功能：判断分区号合不合法 */
+// 判断分区号合不合法
 static bool led_zone_valid(led_zone_t zone)
 {
     return ((int)zone >= 0) && (zone < LED_ZONE_MAX);
@@ -73,17 +67,19 @@ static bool led_zone_valid(led_zone_t zone)
 
 #if BSP_LED_BACKEND_WS2812
 
-/* 功能：算好颜色写进内存 */
+// 算好颜色写进内存
 static esp_err_t apply_zone(led_zone_t zone)
 {
     if (!s_zone[zone].inited || s_zone[zone].h == NULL) {
-        return ESP_OK;   /* 功能：没接就当没这路 */
+        // 没接就当没这路
+        return ESP_OK;
     }
 
     uint8_t r = 0, g = 0, b = 0;
 
     if (s_zone[zone].power) {
-        const uint32_t br = (uint32_t)s_zone[zone].brightness;   /* 功能：亮度 0 到 100 */
+        // 亮度 0 到 100
+        const uint32_t br = (uint32_t)s_zone[zone].brightness;
         r = (uint8_t)((uint32_t)s_zone[zone].r * br / 100U);
         g = (uint8_t)((uint32_t)s_zone[zone].g * br / 100U);
         b = (uint8_t)((uint32_t)s_zone[zone].b * br / 100U);
@@ -96,7 +92,7 @@ static esp_err_t apply_zone(led_zone_t zone)
     return err;
 }
 
-/* 功能：把数据发给灯带 */
+// 把数据发给灯带
 static esp_err_t zone_refresh(led_zone_t zone)
 {
     if (!s_zone[zone].inited || s_zone[zone].h == NULL) {
@@ -111,7 +107,7 @@ static esp_err_t zone_refresh(led_zone_t zone)
 }
 
 #else
-/* 功能：换成普通单色灯模块 */
+// 换成普通单色灯模块
 
 static const ledc_channel_t s_plain_ch[LED_ZONE_MAX] = {
     [LED_ZONE_LIVING]  = LEDC_CHANNEL_4,
@@ -120,11 +116,12 @@ static const ledc_channel_t s_plain_ch[LED_ZONE_MAX] = {
     [LED_ZONE_BATH]    = LEDC_CHANNEL_7,
 };
 
-/* 功能：按亮度写占空比 */
+// 按亮度写占空比
 static esp_err_t apply_zone(led_zone_t zone)
 {
     if (!s_zone[zone].inited) {
-        return ESP_OK;   /* 功能：没接就当没这路 */
+        // 没接就当没这路
+        return ESP_OK;
     }
 
     uint32_t duty = 0;
@@ -146,16 +143,17 @@ static esp_err_t apply_zone(led_zone_t zone)
     return err;
 }
 
-/* 功能：这种灯已直接生效 */
+// 这种灯已直接生效
 static esp_err_t zone_refresh(led_zone_t zone)
 {
     (void)zone;
     return ESP_OK;
 }
 
-#endif /* 功能：灯带后端收尾 */
+// 灯带后端收尾
+#endif
 
-/* 功能：整批开关只刷新一次 */
+// 整批开关只刷新一次
 static esp_err_t led_apply_all(bool on)
 {
     esp_err_t first_err = ESP_OK;
@@ -172,7 +170,7 @@ static esp_err_t led_apply_all(bool on)
     return (first_err != ESP_OK) ? first_err : flush_err;
 }
 
-/* 功能：把硬件准备好 */
+// 把硬件准备好
 esp_err_t led_init(void)
 {
     if (s_inited) {
@@ -192,9 +190,10 @@ esp_err_t led_init(void)
         esp_err_t err = ws2812_new_strip(s_zone_hw[i].gpio, s_zone_hw[i].led_num, &s_zone[i].h);
         if (err != ESP_OK || s_zone[i].h == NULL) {
             if (err == ESP_OK) {
-                err = ESP_ERR_INVALID_STATE;   /* 功能：正常不该走到这里 */
+                // 正常不该走到这里
+                err = ESP_ERR_INVALID_STATE;
             }
-            /* 功能：单路坏了不影响别的 */
+            // 单路坏了不影响别的
             ESP_LOGW(TAG, "  %-7s gpio=%-2d leds=%u FAILED: %s -> zone disabled",
                      s_zone_name[i], (int)s_zone_hw[i].gpio, (unsigned)s_zone_hw[i].led_num,
                      esp_err_to_name(err));
@@ -202,7 +201,7 @@ esp_err_t led_init(void)
             continue;
         }
 
-        /* 功能：开机默认关灯全白 */
+        // 开机默认关灯全白
         s_zone[i].inited     = true;
         s_zone[i].power      = false;
         s_zone[i].brightness = 100;
@@ -218,7 +217,7 @@ esp_err_t led_init(void)
 #else
     ESP_LOGI(TAG, "backend: plain single-colour LED module (LEDC PWM, NO colour)");
 
-    /* 功能：四路灯共用一个定时器 */
+    // 四路灯共用一个定时器
     {
         ledc_timer_config_t tcfg = {
             .speed_mode      = BSP_LED_PLAIN_MODE,
@@ -250,13 +249,13 @@ esp_err_t led_init(void)
 
         esp_err_t err = ledc_channel_config(&ccfg);
         if (err != ESP_OK) {
-            /* 功能：单路坏了不影响别的 */
+            // 单路坏了不影响别的
             ESP_LOGW(TAG, "  %-7s gpio=%-2d FAILED: %s -> zone disabled",
                      s_zone_name[i], (int)s_zone_hw[i].gpio, esp_err_to_name(err));
             continue;
         }
 
-        /* 功能：开机默认关灯全白 */
+        // 开机默认关灯全白
         s_zone[i].inited     = true;
         s_zone[i].power      = false;
         s_zone[i].brightness = 100;
@@ -265,7 +264,7 @@ esp_err_t led_init(void)
         s_zone[i].b          = 255;
         ok_cnt++;
 
-        /* 功能：先按关灯写一次 */
+        // 先按关灯写一次
         (void)apply_zone((led_zone_t)i);
 
         ESP_LOGI(TAG, "  %-7s gpio=%-2d OK%s",
@@ -277,22 +276,23 @@ esp_err_t led_init(void)
 #endif
                  );
     }
-#endif /* 功能：灯带后端收尾 */
+// 灯带后端收尾
+#endif
 
-    /* 功能：上电先全刷黑 */
+    // 上电先全刷黑
     (void)led_flush();
 
     s_inited = true;
 
 #if BSP_STATUS_LED_ENABLE
-    /* 功能：状态灯先进启动中 */
+    // 状态灯先进启动中
     (void)led_status_set(LED_STATUS_BOOT);
 #else
     ESP_LOGI(TAG, "onboard status led disabled (BSP_STATUS_LED_ENABLE = 0)");
 #endif
 
     if (ok_cnt == 0) {
-        /* 功能：一路都没有要报上 */
+        // 一路都没有要报上
         ESP_LOGW(TAG, "no led strip available (0/%d), check data line and 5V supply",
                  (int)LED_ZONE_MAX);
         return ESP_ERR_NOT_FOUND;
@@ -302,7 +302,7 @@ esp_err_t led_init(void)
     return ESP_OK;
 }
 
-/* 功能：开或关某路灯 */
+// 开或关某路灯
 esp_err_t led_set_power(led_zone_t zone, bool on)
 {
     if (!led_zone_valid(zone)) {
@@ -320,24 +320,24 @@ esp_err_t led_set_power(led_zone_t zone, bool on)
              (unsigned)s_zone[zone].brightness,
              (unsigned)s_zone[zone].r, (unsigned)s_zone[zone].g, (unsigned)s_zone[zone].b);
 
-    /* 功能：单次调用马上见效 */
+    // 单次调用马上见效
     return zone_refresh(zone);
 }
 
-/* 功能：查某路灯开着吗 */
+// 查某路灯开着吗
 bool led_get_power(led_zone_t zone)
 {
     return led_zone_valid(zone) ? s_zone[zone].power : false;
 }
 
-/* 功能：调某路灯的颜色 */
+// 调某路灯的颜色
 esp_err_t led_set_rgb(led_zone_t zone, uint8_t r, uint8_t g, uint8_t b)
 {
     if (!led_zone_valid(zone)) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* 功能：颜色留着下次用 */
+    // 颜色留着下次用
     s_zone[zone].r = r;
     s_zone[zone].g = g;
     s_zone[zone].b = b;
@@ -354,7 +354,7 @@ esp_err_t led_set_rgb(led_zone_t zone, uint8_t r, uint8_t g, uint8_t b)
     return zone_refresh(zone);
 }
 
-/* 功能：读某路灯的颜色 */
+// 读某路灯的颜色
 esp_err_t led_get_rgb(led_zone_t zone, uint8_t *r, uint8_t *g, uint8_t *b)
 {
     if (!led_zone_valid(zone) || r == NULL || g == NULL || b == NULL) {
@@ -367,7 +367,7 @@ esp_err_t led_get_rgb(led_zone_t zone, uint8_t *r, uint8_t *g, uint8_t *b)
     return ESP_OK;
 }
 
-/* 功能：调某路灯的亮度 */
+// 调某路灯的亮度
 esp_err_t led_set_brightness(led_zone_t zone, uint8_t percent)
 {
     if (!led_zone_valid(zone)) {
@@ -388,13 +388,13 @@ esp_err_t led_set_brightness(led_zone_t zone, uint8_t percent)
     return zone_refresh(zone);
 }
 
-/* 功能：读某路灯的亮度 */
+// 读某路灯的亮度
 uint8_t led_get_brightness(led_zone_t zone)
 {
     return led_zone_valid(zone) ? s_zone[zone].brightness : 0;
 }
 
-/* 功能：把某路灯反过来 */
+// 把某路灯反过来
 esp_err_t led_toggle(led_zone_t zone)
 {
     if (!led_zone_valid(zone)) {
@@ -403,21 +403,21 @@ esp_err_t led_toggle(led_zone_t zone)
     return led_set_power(zone, !s_zone[zone].power);
 }
 
-/* 功能：四路灯全关 */
+// 四路灯全关
 esp_err_t led_all_off(void)
 {
     ESP_LOGI(TAG, "all zones -> OFF");
     return led_apply_all(false);
 }
 
-/* 功能：四路灯全开 */
+// 四路灯全开
 esp_err_t led_all_on(void)
 {
     ESP_LOGI(TAG, "all zones -> ON");
     return led_apply_all(true);
 }
 
-/* 功能：把数据统一发出去 */
+// 把数据统一发出去
 esp_err_t led_flush(void)
 {
     esp_err_t first_err = ESP_OK;
@@ -431,13 +431,13 @@ esp_err_t led_flush(void)
     return first_err;
 }
 
-/* 功能：把分区号换成名字 */
+// 把分区号换成名字
 const char *led_zone_name(led_zone_t zone)
 {
     return led_zone_valid(zone) ? s_zone_name[zone] : "unknown";
 }
 
-/* 功能：由名字反查分区号 */
+// 由名字反查分区号
 led_zone_t led_zone_from_name(const char *name)
 {
     if (name == NULL) {
@@ -452,10 +452,10 @@ led_zone_t led_zone_from_name(const char *name)
     return LED_ZONE_MAX;
 }
 
-/* 功能：板上一颗状态灯 */
+// 板上一颗状态灯
 #if BSP_STATUS_LED_ENABLE
 
-/* 功能：状态对应颜色和闪法 */
+// 状态对应颜色和闪法
 typedef struct {
     uint8_t  r, g, b;
     bool     blink;
@@ -474,7 +474,7 @@ static const led_status_cfg_t s_status_cfg[] = {
 ESP_STATIC_ASSERT((sizeof(s_status_cfg) / sizeof(s_status_cfg[0])) == (size_t)(LED_STATUS_AP_MODE + 1),
                   "s_status_cfg must cover every led_status_t");
 
-/* 功能：状态对应的名字 */
+// 状态对应的名字
 static const char *const s_status_name[] = {
     [LED_STATUS_BOOT]            = "boot",
     [LED_STATUS_WIFI_CONNECTING] = "wifi_connecting",
@@ -484,12 +484,14 @@ static const char *const s_status_name[] = {
     [LED_STATUS_AP_MODE]         = "ap_mode",
 };
 
-static esp_timer_handle_t s_status_timer = NULL;   /* 功能：只建一次 */
+// 只建一次
+static esp_timer_handle_t s_status_timer = NULL;
 static led_status_t       s_status_cur   = LED_STATUS_BOOT;
-static bool               s_status_on    = false;  /* 功能：现在是亮是灭 */
+// 现在是亮是灭
+static bool               s_status_on    = false;
 static uint8_t            s_status_r = 0, s_status_g = 0, s_status_b = 255;
 
-/* 功能：定时翻亮灭 */
+// 定时翻亮灭
 static void status_timer_cb(void *arg)
 {
     (void)arg;
@@ -503,7 +505,7 @@ static void status_timer_cb(void *arg)
     }
 }
 
-/* 功能：没有就建闪灯定时器 */
+// 没有就建闪灯定时器
 static esp_err_t status_timer_ensure(void)
 {
     if (s_status_timer != NULL) {
@@ -525,29 +527,32 @@ static esp_err_t status_timer_ensure(void)
     return err;
 }
 
-#endif /* 功能：状态灯开关收尾 */
+// 状态灯开关收尾
+#endif
 
-/* 功能：直接写状态灯颜色 */
+// 直接写状态灯颜色
 esp_err_t led_status_rgb(uint8_t r, uint8_t g, uint8_t b)
 {
 #if BSP_STATUS_LED_ENABLE
-    /* 功能：灯珠要绿在前 */
+    // 灯珠要绿在前
     const uint8_t grb[3] = { g, r, b };
     return ws2812_bitbang_write(BSP_STATUS_LED_GPIO, grb, 1);
 #else
     (void)r;
     (void)g;
     (void)b;
-    return ESP_OK;   /* 功能：没启用就空着 */
+    // 没启用就空着
+    return ESP_OK;
 #endif
 }
 
-/* 功能：切状态灯的花样 */
+// 切状态灯的花样
 esp_err_t led_status_set(led_status_t st)
 {
 #if !BSP_STATUS_LED_ENABLE
     (void)st;
-    return ESP_OK;   /* 功能：没启用就空着 */
+    // 没启用就空着
+    return ESP_OK;
 #else
     if ((int)st < 0 || st > LED_STATUS_AP_MODE) {
         return ESP_ERR_INVALID_ARG;
@@ -558,7 +563,7 @@ esp_err_t led_status_set(led_status_t st)
         return err;
     }
 
-    /* 功能：换花样先停旧节拍 */
+    // 换花样先停旧节拍
     (void)esp_timer_stop(s_status_timer);
 
     const led_status_cfg_t *cfg = &s_status_cfg[st];
@@ -569,7 +574,7 @@ esp_err_t led_status_set(led_status_t st)
     s_status_b   = cfg->b;
     s_status_on  = true;
 
-    /* 功能：马上亮不等下一轮 */
+    // 马上亮不等下一轮
     err = led_status_rgb(cfg->r, cfg->g, cfg->b);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "status %s: write failed: %s", s_status_name[s_status_cur], esp_err_to_name(err));
@@ -578,10 +583,11 @@ esp_err_t led_status_set(led_status_t st)
 
     if (!cfg->blink) {
         ESP_LOGI(TAG, "status led -> %s (steady)", s_status_name[s_status_cur]);
-        return ESP_OK;   /* 功能：常亮就不用定时器 */
+        // 常亮就不用定时器
+        return ESP_OK;
     }
 
-    /* 功能：起循环闪灯 */
+    // 起循环闪灯
     err = esp_timer_start_periodic(s_status_timer, (uint64_t)cfg->period_ms * 1000ULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "status timer start(%ums) failed: %s",
@@ -591,5 +597,6 @@ esp_err_t led_status_set(led_status_t st)
 
     ESP_LOGI(TAG, "status led -> %s (blink %ums)", s_status_name[s_status_cur], (unsigned)cfg->period_ms);
     return ESP_OK;
-#endif /* 功能：状态灯开关收尾 */
+// 状态灯开关收尾
+#endif
 }

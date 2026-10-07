@@ -1,19 +1,3 @@
-/*
- * 模块：
- *   上行的广播口子（对外接口见 app_link.h）。手里攥着一张小表，
- *   表里是各条路登记进来的发送回调，谁要发消息就挨个发一遍。
- *   被 mqtt_app.c、ble_app.c 和 app_cmd.h 的实现调用；
- *   自己不碰硬件，只调表里那些回调。
- *
- *   用的是一把能同一个人反复进的锁：发的过程里可能又拐回来再发一次，
- *   普通锁到这儿就卡死了。
- *
- * 功能：
- *   登记和撤销一条路
- *   挨个把消息发出去
- *   没连上的路跳过
- *   种类的名字
- */
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
@@ -24,14 +8,14 @@
 
 static const char *TAG = "app_link";
 
-/* 功能：最多记几条路 */
+// 最多记几条路
 #define APP_LINK_MAX 4
 
 static const app_link_t *s_links[APP_LINK_MAX];
 static int               s_link_cnt = 0;
 static bool              s_inited   = false;
 
-/* 功能：能重进的锁，防卡死 */
+// 能重进的锁，防卡死
 static SemaphoreHandle_t s_lock = NULL;
 
 static void app_link_lock_init(void)
@@ -56,7 +40,7 @@ esp_err_t app_link_register(const app_link_t *link)
 
     esp_err_t ret = ESP_OK;
 
-    /* 功能：已经登记过就不再记 */
+    // 已经登记过就不再记
     bool found = false;
     for (int i = 0; i < s_link_cnt; i++) {
         if (s_links[i] == link) {
@@ -96,7 +80,7 @@ esp_err_t app_link_unregister(const app_link_t *link)
     esp_err_t ret = ESP_ERR_NOT_FOUND;
     for (int i = 0; i < s_link_cnt; i++) {
         if (s_links[i] == link) {
-            /* 功能：后面往前挪一位 */
+            // 后面往前挪一位
             for (int j = i; j < s_link_cnt - 1; j++) {
                 s_links[j] = s_links[j + 1];
             }
@@ -118,7 +102,8 @@ int app_link_broadcast(app_msg_type_t type, const char *json, size_t len)
         return 0;
     }
     if (s_lock == NULL) {
-        return 0;   /* 功能：一条路都没登记 */
+        // 一条路都没登记
+        return 0;
     }
 
     int sent = 0;
@@ -131,7 +116,7 @@ int app_link_broadcast(app_msg_type_t type, const char *json, size_t len)
             continue;
         }
 
-        /* 功能：没连上的直接跳过 */
+        // 没连上的直接跳过
         if (lk->is_connected != NULL && !lk->is_connected()) {
             continue;
         }
@@ -140,7 +125,7 @@ int app_link_broadcast(app_msg_type_t type, const char *json, size_t len)
         if (err == ESP_OK) {
             sent++;
         } else if (err != ESP_ERR_INVALID_STATE) {
-            /* 功能：没连上不算错，不记 */
+            // 没连上不算错，不记
             ESP_LOGW(TAG, "link \"%s\" send(%s) failed: %s",
                      lk->name ? lk->name : "?", app_msg_type_name(type),
                      esp_err_to_name(err));

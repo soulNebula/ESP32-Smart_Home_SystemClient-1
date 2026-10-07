@@ -1,22 +1,4 @@
-﻿# 模块：
-#   串口终端。连上板子看固件日志、敲命令（开机、关灯、问温度），
-#   端口和波特率都能选，输入时按 Tab 能补全，日志同时存成文件。
-#   跟 build.ps1、flash.ps1 配合：那边烧完，这边看输出。
-#   用法：
-#     powershell -ExecutionPolicy Bypass -File tools\monitor.ps1
-#     powershell -ExecutionPolicy Bypass -File tools\monitor.ps1 -List
-#     powershell -ExecutionPolicy Bypass -File tools\monitor.ps1 -Port COM31 -Baud 115200
-#     powershell -ExecutionPolicy Bypass -File tools\monitor.ps1 -Port COM31 -Seconds 20 -NoEcho
-#   连上以后：Ctrl+P 回菜单   Ctrl+L 只看调试台   Ctrl+C 退出
-#   补全那个函数的参数名不敢叫 input：那是自动变量，会变空。
-#
-# 功能：
-#   选端口和波特率
-#   看板子日志
-#   敲命令给板子
-#   日志存成文件
-#requires -version 5.1
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Port = '',
     [int]$Baud = 0,
@@ -43,7 +25,7 @@ try { $script:tty = -not [Console]::IsInputRedirected } catch { $script:tty = $f
 $BaudList    = @(9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600)
 $DefaultBaud = 115200
 
-# 功能：Tab 补全用的候选表
+# Tab 补全用的候选表
 $CMD_LIST  = @('help','help-voice','status','on','off','toggle','set','color',
                'open','close','auto','cfg','say','log')
 $DEV_LIST  = @('led_living','led_kitchen','led_bedroom','led_bath','fan','window','door','curtain','all')
@@ -96,7 +78,7 @@ function Get-Lcp($items) {
     return $p
 }
 
-# 功能：唯一命中就补全
+# 唯一命中就补全
 function Complete-Input([string]$text) {
     $parts   = @($text -split ' ')
     $idx     = $parts.Count - 1
@@ -253,7 +235,7 @@ function Show-Menu {
     Write-Host "=======================================" -ForegroundColor Cyan
 }
 
-# 功能：真返回就回菜单
+# 真返回就回菜单
 function Run-Monitor {
     $logWriter = $null; $logPath = $null
     if (-not $NoLog) {
@@ -393,7 +375,7 @@ function Run-Monitor {
     return $backToMenu
 }
 
-# 功能：主流程从这儿走
+# 主流程从这儿走
 $st = Load-State
 if ($st) {
     if ($st.port) { $script:curPort = [string]$st.port }
@@ -405,7 +387,7 @@ if ($List) {
     exit 0
 }
 
-# 功能：指定端口就直接连
+# 指定端口就直接连
 if ($Port) {
     $script:curPort = $Port
     if ($Baud -gt 0) { $script:curBaud = $Baud }
@@ -418,7 +400,7 @@ if ($Port) {
     exit 0
 }
 
-# 功能：无人值守用上次端口
+# 无人值守用上次端口
 if (-not $script:tty) {
     if (-not $script:curPort) {
         $p = Scan-Ports

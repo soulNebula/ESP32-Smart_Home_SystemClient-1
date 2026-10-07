@@ -1,24 +1,10 @@
-/*
- * 模块：
- *   手写的小 JSON 解析。工程要求少引库，所以没用 Gson 那些，
- *   自己按字符一格格读，够 app 用就行。
- *   被 data/Models.kt 用来把板子推上来的文字解成设备状态和传感器读数，
- *   数据模型和字段名沿用 data/Contract.kt。
- *
- * 功能：
- *   把一段文字解成对象
- *   按名字取数字
- *   按名字取文字
- *   取不到就给默认值
- *   格式错也不崩
- */
 package com.smarthome.ble.data
 
 object Json {
 
     const val TAG = "SmartHomeJson"
 
-    /* 功能：整段解成对象 */
+    // 整段解成对象
     fun parseObject(text: String): MutableMap<String, Any?>? {
         return try {
             val p = Parser(text)
@@ -33,23 +19,23 @@ object Json {
         }
     }
 
-    /* 功能：原样取一个值 */
+    // 原样取一个值
     fun raw(obj: Map<String, Any?>?, key: String): Any? = obj?.get(key)
 
-    /* 功能：取里层对象 */
+    // 取里层对象
     fun obj(obj: Map<String, Any?>?, key: String): Map<String, Any?>? {
         val v = obj?.get(key) ?: return null
         @Suppress("UNCHECKED_CAST")
         return v as? Map<String, Any?>
     }
 
-    /* 功能：取一个数 */
+    // 取一个数
     fun num(obj: Map<String, Any?>?, key: String): Double? {
         val v = obj?.get(key) ?: return null
         return toDouble(v)
     }
 
-    /* 功能：什么写法都认 */
+    // 什么写法都认
     fun toDouble(v: Any?): Double? = when (v) {
         null -> null
         is Double -> if (v.isNaN() || v.isInfinite()) null else v
@@ -59,15 +45,15 @@ object Json {
         else -> null
     }
 
-    /* 功能：取整数 */
+    // 取整数
     fun int(obj: Map<String, Any?>?, key: String, default: Int = 0): Int =
         num(obj, key)?.let { Math.round(it).toInt() } ?: default
 
-    /* 功能：取小数 */
+    // 取小数
     fun dbl(obj: Map<String, Any?>?, key: String, default: Double = 0.0): Double =
         num(obj, key) ?: default
 
-    /* 功能：取一段文字 */
+    // 取一段文字
     fun str(obj: Map<String, Any?>?, key: String): String? = when (val v = obj?.get(key)) {
         null -> null
         is String -> v
@@ -76,13 +62,13 @@ object Json {
         else -> null
     }
 
-    /* 功能：取开关值 */
+    // 取开关值
     fun bool(obj: Map<String, Any?>?, key: String): Boolean? {
         val v = obj?.get(key) ?: return null
         return toBool(v)
     }
 
-    /* 功能：数字文字都当开关 */
+    // 数字文字都当开关
     fun toBool(v: Any?): Boolean? = when (v) {
         null -> null
         is Boolean -> v
@@ -95,19 +81,19 @@ object Json {
         else -> null
     }
 
-    /* 功能：取不开就默认值 */
+    // 取不开就默认值
     fun boolOf(obj: Map<String, Any?>?, key: String, default: Boolean = false): Boolean =
         bool(obj, key) ?: default
 
     private class Parser(private val s: String) {
         private var i = 0
 
-        /* 功能：跳过空白 */
+        // 跳过空白
         fun skipWs() {
             while (i < s.length && s[i].isWhitespace()) i++
         }
 
-        /* 功能：读下一个值 */
+        // 读下一个值
         fun readValue(): Any? {
             skipWs()
             if (i >= s.length) throw IllegalStateException("eof")
@@ -126,10 +112,11 @@ object Json {
             }
         }
 
-        /* 功能：读一个大括号 */
+        // 读一个大括号
         private fun readObject(): MutableMap<String, Any?> {
             val m = LinkedHashMap<String, Any?>()
-            i++ // 功能：跳过左括号
+            // 跳过左括号
+            i++
             skipWs()
             if (i < s.length && s[i] == '}') { i++; return m }
             while (true) {
@@ -150,10 +137,11 @@ object Json {
             return m
         }
 
-        /* 功能：读一个方括号 */
+        // 读一个方括号
         private fun readArray(): MutableList<Any?> {
             val l = ArrayList<Any?>()
-            i++ // 功能：跳过左方括号
+            // 跳过左方括号
+            i++
             skipWs()
             if (i < s.length && s[i] == ']') { i++; return l }
             while (true) {
@@ -167,9 +155,10 @@ object Json {
             return l
         }
 
-        /* 功能：读一对引号 */
+        // 读一对引号
         private fun readString(): String {
-            i++ // 功能：跳过开引号
+            // 跳过开引号
+            i++
             val sb = StringBuilder()
             while (true) {
                 if (i >= s.length) throw IllegalStateException("eof in string")
@@ -201,7 +190,7 @@ object Json {
             }
         }
 
-        /* 功能：读一个数 */
+        // 读一个数
         private fun readNumber(): Double {
             val start = i
             while (i < s.length && (s[i].isDigit() || s[i] == '-' || s[i] == '+' ||
@@ -211,14 +200,14 @@ object Json {
             return t.toDoubleOrNull() ?: throw IllegalStateException("bad number '$t'")
         }
 
-        /* 功能：读 true 或 false */
+        // 读 true 或 false
         private fun readKeyword(): Boolean {
             if (s.startsWith("true", i)) { i += 4; return true }
             if (s.startsWith("false", i)) { i += 5; return false }
             throw IllegalStateException("bad keyword at $i")
         }
 
-        /* 功能：对一下是不是这个词 */
+        // 对一下是不是这个词
         private fun expect(word: String) {
             if (!s.startsWith(word, i)) throw IllegalStateException("expected $word at $i")
             i += word.length

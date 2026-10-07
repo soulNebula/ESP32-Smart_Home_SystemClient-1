@@ -1,26 +1,3 @@
-/*
- * 模块：
- *   设备总状态表。全屋每台设备的开关、亮度、颜色只记在这一份里，
- *   是本项目唯一的真相来源：语音、按键、手机、自动联动都只改它，
- *   界面刷新、上报手机、联动判断也只读它，不会各处各存一套对不上。
- *   被 automation.c、mqtt_app.c、ble_app.c、main.c 调用；
- *   自己向下调 led、fan、servo 三个硬件模块去动真设备。
- *
- *   这里的每个动作都分三步走：先改状态、再动硬件、最后通知上层，
- *   并且顺手记下这次是谁改的（人还是自动），自动联动靠它决定让不让手。
- *   状态数组用一把锁护着，几个人同时改也不会写乱；通知上层一律放到
- *   放锁之后，免得在锁里转回来又调自己。设备到硬件的对照是一路一路
- *   写死的，不靠两边的序号碰巧一致。
- *
- * 功能：
- *   记住每台设备的状态
- *   改状态时顺手动硬件
- *   改完通知界面和手机
- *   给灯带上色
- *   一键全关
- *   把状态拼成 JSON
- *   名字和设备互相查
- */
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -41,59 +18,63 @@
 
 static const char *TAG = "device_model";
 
-/* 功能：是不是四路灯带之一 */
+// 是不是四路灯带之一
 static bool dev_is_led(device_id_t id)
 {
     return (id == DEV_LED_LIVING) || (id == DEV_LED_KITCHEN) ||
            (id == DEV_LED_BEDROOM) || (id == DEV_LED_BATH);
 }
 
-/* 功能：是不是舵机类，窗门帘 */
+// 是不是舵机类，窗门帘
 static bool dev_is_servo(device_id_t id)
 {
     return (id == DEV_WINDOW) || (id == DEV_DOOR) || (id == DEV_CURTAIN);
 }
 
-/* 功能：编号越界就拒绝 */
+// 编号越界就拒绝
 static bool dev_is_valid(device_id_t id)
 {
     return ((int)id >= 0) && (id < DEV_COUNT);
 }
 
-/* 功能：设备换成灯带分区 */
+// 设备换成灯带分区
 static led_zone_t dev_to_led_zone(device_id_t id)
 {
     switch (id) {
-    case DEV_LED_LIVING:  return LED_ZONE_LIVING;   /* 功能：一路路对照，不靠顺序 */
+    // 一路路对照，不靠顺序
+    case DEV_LED_LIVING:  return LED_ZONE_LIVING;
     case DEV_LED_KITCHEN: return LED_ZONE_KITCHEN;
     case DEV_LED_BEDROOM: return LED_ZONE_BEDROOM;
     case DEV_LED_BATH:    return LED_ZONE_BATH;
-    default:              return LED_ZONE_MAX;      /* 功能：不是灯 */
+    // 不是灯
+    default:              return LED_ZONE_MAX;
     }
 }
 
-/* 功能：设备换成舵机编号 */
+// 设备换成舵机编号
 static servo_id_t dev_to_servo_id(device_id_t id)
 {
     switch (id) {
-    case DEV_WINDOW:  return SERVO_WINDOW;   /* 功能：顺序不同，不能硬转 */
+    // 顺序不同，不能硬转
+    case DEV_WINDOW:  return SERVO_WINDOW;
     case DEV_DOOR:    return SERVO_DOOR;
     case DEV_CURTAIN: return SERVO_CURTAIN;
-    default:          return SERVO_MAX;      /* 功能：不是舵机 */
+    // 不是舵机
+    default:          return SERVO_MAX;
     }
 }
 
-/* 功能：全屋设备状态，锁护着 */
+// 全屋设备状态，锁护着
 static device_state_t s_dev[DEV_COUNT];
 
-/* 功能：舵机开合位置，0关100开 */
+// 舵机开合位置，0关100开
 static uint8_t s_servo_pos[DEV_COUNT];
 
-/* 功能：只留最后登记的回调 */
+// 只留最后登记的回调
 static device_event_cb_t s_cb      = NULL;
 static void             *s_cb_user = NULL;
 
-/* 功能：一把锁护住状态表 */
+// 一把锁护住状态表
 static SemaphoreHandle_t s_lock = NULL;
 
 static bool s_inited = false;
@@ -112,13 +93,13 @@ static inline void dev_unlock(void)
     }
 }
 
-/* 功能：统一回调，锁外再调 */
+// 统一回调，锁外再调
 static void notify(device_id_t id, ctrl_source_t src)
 {
     device_event_cb_t cb;
     void             *user;
 
-    /* 功能：锁里只抄一份，锁外调 */
+    // 锁里只抄一份，锁外调
     dev_lock();
     cb   = s_cb;
     user = s_cb_user;
@@ -129,14 +110,14 @@ static void notify(device_id_t id, ctrl_source_t src)
     }
 }
 
-/* 功能：是不是人手动改的 */
+// 是不是人手动改的
 static bool src_is_manual(ctrl_source_t src)
 {
     return (src == SRC_MQTT) || (src == SRC_BLE) ||
            (src == SRC_VOICE) || (src == SRC_LOCAL_KEY);
 }
 
-/* 功能：人改过就告诉联动 */
+// 人改过就告诉联动
 static void notify_manual_if_needed(device_id_t id, ctrl_source_t src)
 {
     if (src_is_manual(src)) {
@@ -144,7 +125,7 @@ static void notify_manual_if_needed(device_id_t id, ctrl_source_t src)
     }
 }
 
-/* 功能：开关真硬件 */
+// 开关真硬件
 static void hw_set_power(device_id_t id, bool on)
 {
     esp_err_t err = ESP_OK;
@@ -162,7 +143,7 @@ static void hw_set_power(device_id_t id, bool on)
     }
 }
 
-/* 功能：调档位，也动硬件 */
+// 调档位，也动硬件
 static void hw_set_level(device_id_t id, uint8_t percent)
 {
     esp_err_t err = ESP_OK;
@@ -184,7 +165,7 @@ static void hw_set_level(device_id_t id, uint8_t percent)
     }
 }
 
-/* 功能：给灯带上色 */
+// 给灯带上色
 static void hw_set_rgb(device_id_t id, uint8_t r, uint8_t g, uint8_t b)
 {
     esp_err_t err = led_set_rgb(dev_to_led_zone(id), r, g, b);
@@ -197,7 +178,7 @@ static void hw_set_rgb(device_id_t id, uint8_t r, uint8_t g, uint8_t b)
 
 esp_err_t device_model_init(void)
 {
-    /* 功能：已经弄过就直接返回 */
+    // 已经弄过就直接返回
     if (s_inited) {
         ESP_LOGD(TAG, "already initialized");
         return ESP_OK;
@@ -206,27 +187,31 @@ esp_err_t device_model_init(void)
     if (s_lock == NULL) {
         s_lock = xSemaphoreCreateMutex();
         if (s_lock == NULL) {
-            /* 功能：内存不够就不加锁 */
+            // 内存不够就不加锁
             ESP_LOGW(TAG, "mutex create failed, run without lock");
         }
     }
 
-    /* 功能：默认全部先设成关 */
+    // 默认全部先设成关
     for (int i = 0; i < DEV_COUNT; i++) {
         memset(&s_dev[i], 0, sizeof(s_dev[i]));
         s_dev[i].power      = false;
         s_dev[i].change_cnt = 0;
-        s_servo_pos[i]      = 0;   /* 功能：窗门帘都归零 */
+        // 窗门帘都归零
+        s_servo_pos[i]      = 0;
 
         if (dev_is_led((device_id_t)i)) {
-            s_dev[i].level = 100;                          /* 功能：灯默认亮度满 */
-            s_dev[i].r = s_dev[i].g = s_dev[i].b = 255;    /* 功能：灯默认白色 */
+            // 灯默认亮度满
+            s_dev[i].level = 100;
+            // 灯默认白色
+            s_dev[i].r = s_dev[i].g = s_dev[i].b = 255;
         } else {
-            s_dev[i].level = 0;                            /* 功能：风扇舵机都归零 */
+            // 风扇舵机都归零
+            s_dev[i].level = 0;
         }
     }
 
-    /* 功能：把硬件准备好 */
+    // 把硬件准备好
     esp_err_t err = led_init();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "led_init failed: %s (continue)", esp_err_to_name(err));
@@ -240,7 +225,7 @@ esp_err_t device_model_init(void)
         ESP_LOGW(TAG, "fan_init failed: %s (continue)", esp_err_to_name(err));
     }
 
-    /* 功能：把默认状态刷进硬件 */
+    // 把默认状态刷进硬件
     dev_lock();
     for (int i = 0; i < DEV_COUNT; i++) {
         hw_set_power((device_id_t)i, false);
@@ -260,7 +245,7 @@ esp_err_t device_set_power(device_id_t id, bool on, ctrl_source_t src)
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* 功能：舵机开关就是转到头 */
+    // 舵机开关就是转到头
     if (dev_is_servo(id)) {
         return device_set_level(id, on ? 100 : 0, src);
     }
@@ -269,12 +254,13 @@ esp_err_t device_set_power(device_id_t id, bool on, ctrl_source_t src)
     hw_set_power(id, on);
     s_dev[id].power = on;
     if (id == DEV_FAN) {
-        /* 功能：风扇开关就是零或满 */
+        // 风扇开关就是零或满
         s_dev[id].level = on ? 100 : 0;
     }
-    /* 功能：开关不动灯的亮度 */
+    // 开关不动灯的亮度
     s_dev[id].change_cnt++;
-    uint8_t lvl = s_dev[id].level;      /* 功能：锁里抄一份打日志 */
+    // 锁里抄一份打日志
+    uint8_t lvl = s_dev[id].level;
     dev_unlock();
 
     notify_manual_if_needed(id, src);
@@ -291,7 +277,7 @@ esp_err_t device_toggle(device_id_t id, ctrl_source_t src)
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* 功能：读一下再反过来设 */
+    // 读一下再反过来设
     bool cur = device_get_power(id);
     return device_set_power(id, !cur, src);
 }
@@ -304,7 +290,8 @@ esp_err_t device_set_level(device_id_t id, uint8_t percent, ctrl_source_t src)
     }
 
     if (percent > 100) {
-        percent = 100;   /* 功能：最多只到一百 */
+        // 最多只到一百
+        percent = 100;
     }
 
     dev_lock();
@@ -312,12 +299,15 @@ esp_err_t device_set_level(device_id_t id, uint8_t percent, ctrl_source_t src)
     s_dev[id].level = percent;
     if (dev_is_servo(id)) {
         s_servo_pos[id] = percent;
-        s_dev[id].power = (percent >= 50);          /* 功能：过半就算开着 */
+        // 过半就算开着
+        s_dev[id].power = (percent >= 50);
     } else {
-        s_dev[id].power = (percent > 0);            /* 功能：有档位就算开着 */
+        // 有档位就算开着
+        s_dev[id].power = (percent > 0);
     }
     s_dev[id].change_cnt++;
-    bool power = s_dev[id].power;       /* 功能：锁里抄一份打日志 */
+    // 锁里抄一份打日志
+    bool power = s_dev[id].power;
     dev_unlock();
 
     notify_manual_if_needed(id, src);
@@ -330,7 +320,7 @@ esp_err_t device_set_level(device_id_t id, uint8_t percent, ctrl_source_t src)
 esp_err_t device_set_color(device_id_t id, uint8_t r, uint8_t g, uint8_t b, ctrl_source_t src)
 {
     if (!dev_is_valid(id) || !dev_is_led(id)) {
-        /* 功能：只有灯有颜色 */
+        // 只有灯有颜色
         ESP_LOGW(TAG, "set_color: %d is not an LED", (int)id);
         return ESP_ERR_INVALID_ARG;
     }
@@ -340,10 +330,11 @@ esp_err_t device_set_color(device_id_t id, uint8_t r, uint8_t g, uint8_t b, ctrl
     s_dev[id].r = r;
     s_dev[id].g = g;
     s_dev[id].b = b;
-    s_dev[id].change_cnt++;     /* 功能：改色也算改过一回 */
+    // 改色也算改过一回
+    s_dev[id].change_cnt++;
     dev_unlock();
 
-    /* 功能：改色也算人动过手 */
+    // 改色也算人动过手
     notify_manual_if_needed(id, src);
     ESP_LOGI(TAG, "%s -> rgb(%u,%u,%u) by %s", device_id_name(id),
              (unsigned)r, (unsigned)g, (unsigned)b, ctrl_source_name(src));
@@ -359,7 +350,7 @@ esp_err_t device_all_off(ctrl_source_t src)
         device_id_t id = (device_id_t)i;
 
         if (dev_is_led(id)) {
-            /* 功能：只关电源留住颜色 */
+            // 只关电源留住颜色
             hw_set_power(id, false);
             s_dev[i].power = false;
             s_dev[i].change_cnt++;
@@ -369,7 +360,7 @@ esp_err_t device_all_off(ctrl_source_t src)
             s_dev[i].level = 0;
             s_dev[i].change_cnt++;
         } else if (dev_is_servo(id)) {
-            /* 功能：窗门帘都关回去 */
+            // 窗门帘都关回去
             hw_set_level(id, 0);
             s_servo_pos[i]  = 0;
             s_dev[i].power  = false;
@@ -378,7 +369,7 @@ esp_err_t device_all_off(ctrl_source_t src)
         }
     }
 
-    /* 功能：四路灯最后一起刷 */
+    // 四路灯最后一起刷
     esp_err_t err = led_flush();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "led_flush failed: %s", esp_err_to_name(err));
@@ -386,14 +377,14 @@ esp_err_t device_all_off(ctrl_source_t src)
 
     dev_unlock();
 
-    /* 功能：人全关也得护一会儿 */
+    // 人全关也得护一会儿
     if (src_is_manual(src)) {
         for (int i = 0; i < DEV_COUNT; i++) {
             automation_notify_manual((device_id_t)i);
         }
     }
 
-    /* 功能：每台设备只通知一次 */
+    // 每台设备只通知一次
     for (int i = 0; i < DEV_COUNT; i++) {
         notify((device_id_t)i, src);
     }
@@ -445,20 +436,28 @@ const device_state_t *device_get_state(device_id_t id)
     if (!dev_is_valid(id)) {
         return NULL;
     }
-    /* 功能：直接给出里头地址 */
+    // 直接给出里头地址
     return &s_dev[id];
 }
 
-/* 功能：顺序得和设备清单一样 */
+// 顺序得和设备清单一样
 static const char *const s_dev_names[DEV_COUNT] = {
-    "led_living",   /* 功能：客厅灯带 */
-    "led_kitchen",  /* 功能：厨房灯带 */
-    "led_bedroom",  /* 功能：卧室灯带 */
-    "led_bath",     /* 功能：浴室灯带 */
-    "fan",          /* 功能：风扇 */
-    "window",       /* 功能：窗户 */
-    "door",         /* 功能：门 */
-    "curtain",      /* 功能：窗帘 */
+    // 客厅灯带
+    "led_living",
+    // 厨房灯带
+    "led_kitchen",
+    // 卧室灯带
+    "led_bedroom",
+    // 浴室灯带
+    "led_bath",
+    // 风扇
+    "fan",
+    // 窗户
+    "window",
+    // 门
+    "door",
+    // 窗帘
+    "curtain",
 };
 _Static_assert(sizeof(s_dev_names) / sizeof(s_dev_names[0]) == DEV_COUNT,
                "device name table size must match DEV_COUNT");
@@ -472,7 +471,7 @@ const char *device_id_name(device_id_t id)
     return s_dev_names[id];
 }
 
-/* 功能：名字反查设备 */
+// 名字反查设备
 device_id_t device_from_name(const char *name)
 {
     if (name == NULL) {
@@ -480,7 +479,8 @@ device_id_t device_from_name(const char *name)
     }
 
     if (strcmp(name, "all") == 0) {
-        return DEV_COUNT;       /* 功能：全部 */
+        // 全部
+        return DEV_COUNT;
     }
 
     for (int i = 0; i < DEV_COUNT; i++) {
@@ -488,10 +488,11 @@ device_id_t device_from_name(const char *name)
             return (device_id_t)i;
         }
     }
-    return DEV_COUNT;           /* 功能：找不到 */
+    // 找不到
+    return DEV_COUNT;
 }
 
-/* 功能：拼一台设备的 JSON */
+// 拼一台设备的 JSON
 static void add_device_json(cJSON *root, device_id_t id, const device_state_t *st)
 {
     cJSON *obj = cJSON_CreateObject();
@@ -518,7 +519,7 @@ int device_snapshot_json(char *buf, size_t len)
         return 0;
     }
 
-    /* 功能：锁里抄完就放锁 */
+    // 锁里抄完就放锁
     device_state_t snap[DEV_COUNT];
     dev_lock();
     memcpy(snap, s_dev, sizeof(snap));
@@ -535,13 +536,15 @@ int device_snapshot_json(char *buf, size_t len)
     }
 
     char *js = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);                 /* 功能：js 是自己一块内存 */
+    // js 是自己一块内存
+    cJSON_Delete(root);
     if (js == NULL) {
         ESP_LOGE(TAG, "snapshot: cJSON_PrintUnformatted failed");
         return 0;
     }
 
-    size_t need = strlen(js) + 1;       /* 功能：算上结尾那个零 */
+    // 算上结尾那个零
+    size_t need = strlen(js) + 1;
     if (need > len) {
         ESP_LOGW(TAG, "snapshot buffer too small: need %u, have %u", (unsigned)need, (unsigned)len);
         cJSON_free(js);
@@ -549,7 +552,8 @@ int device_snapshot_json(char *buf, size_t len)
     }
 
     memcpy(buf, js, need);
-    int written = (int)(need - 1);      /* 功能：返回写了几个字 */
+    // 返回写了几个字
+    int written = (int)(need - 1);
     cJSON_free(js);
     return written;
 }
@@ -557,7 +561,8 @@ int device_snapshot_json(char *buf, size_t len)
 esp_err_t device_register_cb(device_event_cb_t cb, void *user_data)
 {
     dev_lock();
-    s_cb      = cb;         /* 功能：只留最后一个，空是注销 */
+    // 只留最后一个，空是注销
+    s_cb      = cb;
     s_cb_user = user_data;
     dev_unlock();
 
@@ -565,15 +570,22 @@ esp_err_t device_register_cb(device_event_cb_t cb, void *user_data)
     return ESP_OK;
 }
 
-/* 功能：顺序得和来源清单一样 */
+// 顺序得和来源清单一样
 static const char *const s_src_names[] = {
-    "boot",     /* 功能：上电 */
-    "key",      /* 功能：按键 */
-    "voice",    /* 功能：语音 */
-    "mqtt",     /* 功能：联网手机 */
-    "ble",      /* 功能：蓝牙手机 */
-    "auto",     /* 功能：自动 */
-    "selftest", /* 功能：自检 */
+    // 上电
+    "boot",
+    // 按键
+    "key",
+    // 语音
+    "voice",
+    // 联网手机
+    "mqtt",
+    // 蓝牙手机
+    "ble",
+    // 自动
+    "auto",
+    // 自检
+    "selftest",
 };
 _Static_assert(sizeof(s_src_names) / sizeof(s_src_names[0]) == 7,
                "ctrl_source name table size must match ctrl_source_t");

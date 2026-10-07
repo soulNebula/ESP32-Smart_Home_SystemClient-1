@@ -1,18 +1,3 @@
-/*
- * 模块：
- *   手机界面。一屏到底：状态条、设备列表、八个开关、传感器、自动模式和日志。
- *   界面自己不算数，按一下就去叫 SmartHomeViewModel 发命令；
- *   配色找 ui/theme/Theme.kt，设备名字和协议字段找 data/Contract.kt 与 data/Models.kt。
- *   启动时还负责问系统要蓝牙权限。
- *
- * 功能：
- *   要蓝牙权限
- *   扫板子并连上
- *   开关灯和风扇
- *   看温湿度和光照
- *   改自动模式阈值
- *   看原始收发包
- */
 package com.smarthome.ble
 
 import android.bluetooth.BluetoothAdapter
@@ -80,7 +65,7 @@ class MainActivity : ComponentActivity() {
 
     private val vm: SmartHomeViewModel by viewModels()
 
-    /* 功能：收下授权结果 */
+    // 收下授权结果
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
@@ -88,7 +73,7 @@ class MainActivity : ComponentActivity() {
         refreshPermState()
     }
 
-    /* 功能：开完蓝牙再查一遍 */
+    // 开完蓝牙再查一遍
     private val enableBtLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -123,30 +108,30 @@ class MainActivity : ComponentActivity() {
         vm.onResume()
     }
 
-    /* 功能：看看缺哪个权限 */
+    // 看看缺哪个权限
     private fun refreshPermState() {
         val missing = BlePermissions.missing(this)
         permGranted.value = missing.isEmpty()
         if (missing.isEmpty()) permDenied = emptyList()
     }
 
-    /* 功能：弹出系统授权框 */
+    // 弹出系统授权框
     private fun requestPermissions() {
         permLauncher.launch(BlePermissions.required())
     }
 
-    /* 功能：请用户打开蓝牙 */
+    // 请用户打开蓝牙
     private fun enableBluetooth() {
         try {
             enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
         } catch (_: Throwable) {
-            // 功能：有的手机弹不出来
+            // 有的手机弹不出来
         }
         vm.onResume()
     }
 }
 
-/* 功能：没权限时挡住界面 */
+// 没权限时挡住界面
 @Composable
 private fun PermissionGate(denied: List<String>, onRequest: () -> Unit) {
     val ctx = LocalContext.current
@@ -208,7 +193,7 @@ private fun PermissionGate(denied: List<String>, onRequest: () -> Unit) {
     }
 }
 
-/* 功能：跳到系统设置页 */
+// 跳到系统设置页
 private fun openAppSettings(ctx: Context) {
     try {
         ctx.startActivity(
@@ -221,7 +206,7 @@ private fun openAppSettings(ctx: Context) {
     }
 }
 
-/* 功能：主界面从上往下排 */
+// 主界面从上往下排
 @Composable
 private fun RootScreen(vm: SmartHomeViewModel, onEnableBluetooth: () -> Unit) {
     val connection = vm.connection
@@ -355,7 +340,7 @@ private fun RootScreen(vm: SmartHomeViewModel, onEnableBluetooth: () -> Unit) {
     }
 }
 
-/* 功能：一行小标题 */
+// 一行小标题
 @Composable
 private fun SectionTitle(text: String) {
     Text(
@@ -366,7 +351,7 @@ private fun SectionTitle(text: String) {
     )
 }
 
-/* 功能：顶部状态条 */
+// 顶部状态条
 @Composable
 private fun HeaderCard(
     c: BleConnectionState,
@@ -418,7 +403,7 @@ private fun HeaderCard(
     }
 }
 
-/* 功能：提醒蓝牙没开 */
+// 提醒蓝牙没开
 @Composable
 private fun BluetoothOffCard(onEnableBluetooth: () -> Unit) {
     Card(
@@ -443,7 +428,7 @@ private fun BluetoothOffCard(onEnableBluetooth: () -> Unit) {
     }
 }
 
-/* 功能：显示警告或错误 */
+// 显示警告或错误
 @Composable
 private fun WarningCard(text: String, isError: Boolean) {
     Card(
@@ -469,7 +454,7 @@ private fun WarningCard(text: String, isError: Boolean) {
     }
 }
 
-/* 功能：扫描并点选设备 */
+// 扫描并点选设备
 @Composable
 private fun ScanAndConnectCard(
     connection: BleConnectionState,
@@ -541,7 +526,7 @@ private fun ScanAndConnectCard(
     }
 }
 
-/* 功能：一键全开全关 */
+// 一键全开全关
 @Composable
 private fun AllControlsCard(vm: SmartHomeViewModel) {
     Card(Modifier.fillMaxWidth()) {
@@ -568,7 +553,7 @@ private fun AllControlsCard(vm: SmartHomeViewModel) {
     }
 }
 
-/* 功能：一路灯的开关和亮度 */
+// 一路灯的开关和亮度
 @Composable
 private fun LampCard(
     id: String,
@@ -636,7 +621,7 @@ private fun LampCard(
     }
 }
 
-/* 功能：风扇开关和转速 */
+// 风扇开关和转速
 @Composable
 private fun FanCard(st: DevState, onToggle: (Boolean) -> Unit, onSpeedCommit: (Int) -> Unit) {
     var slider by remember { mutableStateOf(st.level.toFloat()) }
@@ -673,7 +658,7 @@ private fun FanCard(st: DevState, onToggle: (Boolean) -> Unit, onSpeedCommit: (I
     }
 }
 
-/* 功能：窗门帘的开合度 */
+// 窗门帘的开合度
 @Composable
 private fun ActuatorCard(
     id: String,
@@ -721,7 +706,7 @@ private fun ActuatorCard(
     }
 }
 
-/* 功能：显示五路传感器读数 */
+// 显示五路传感器读数
 @Composable
 private fun SensorCard(s: SensorPayload) {
     Card(Modifier.fillMaxWidth()) {
@@ -750,7 +735,7 @@ private fun SensorCard(s: SensorPayload) {
     }
 }
 
-/* 功能：一行名字加读数 */
+// 一行名字加读数
 @Composable
 private fun SensorRow(k: String, v: String) {
     Row(
@@ -768,7 +753,7 @@ private fun SensorRow(k: String, v: String) {
     }
 }
 
-/* 功能：自动模式开关和入口 */
+// 自动模式开关和入口
 @Composable
 private fun AutoCard(
     auto: Boolean?,
@@ -812,7 +797,7 @@ private fun AutoCard(
     }
 }
 
-/* 功能：显示收发日志 */
+// 显示收发日志
 @Composable
 private fun LogCard(log: List<LogEntry>) {
     Card(Modifier.fillMaxWidth()) {
@@ -849,7 +834,7 @@ private fun LogCard(log: List<LogEntry>) {
     }
 }
 
-/* 功能：挑灯的颜色 */
+// 挑灯的颜色
 @Composable
 private fun ColorDialog(
     id: String,
@@ -901,7 +886,7 @@ private fun ColorDialog(
     )
 }
 
-/* 功能：一条颜色滑条 */
+// 一条颜色滑条
 @Composable
 private fun RgbSlider(label: String, value: Float, onChange: (Float) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -916,7 +901,7 @@ private fun RgbSlider(label: String, value: Float, onChange: (Float) -> Unit) {
     }
 }
 
-/* 功能：改自动模式的阈值 */
+// 改自动模式的阈值
 @Composable
 private fun ThresholdDialog(
     draft: ConfigPayload,
@@ -1006,7 +991,7 @@ private fun ThresholdDialog(
     )
 }
 
-/* 功能：一个数字输入框 */
+// 一个数字输入框
 @Composable
 private fun NumField(label: String, value: Double, onValue: (Double) -> Unit) {
     var text by remember(label) { mutableStateOf(trimNum(value)) }
@@ -1022,6 +1007,6 @@ private fun NumField(label: String, value: Double, onValue: (Double) -> Unit) {
     )
 }
 
-/* 功能：整数不显示小数点 */
+// 整数不显示小数点
 private fun trimNum(v: Double): String =
     if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()

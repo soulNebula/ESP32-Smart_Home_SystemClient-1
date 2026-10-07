@@ -1,20 +1,13 @@
-/*
- * 模块：
- *   程序入口。开机把硬件、屏幕和各业务模块准备好，再建两个常驻任务；
- *   语音、按键、五键键盘的事件都接到这里。它向下调用所有硬件层和业务层模块，
- *   也被这些模块反过来回调。里面还带一个串口调试台，配件没到货时
- *   可以用它模拟语音和手机发来的指令。
- *
- * 功能：
- *   开机准备好硬件
- *   建两个常驻任务
- *   收语音和按键事件
- *   串口敲命令控设备
- */
+// 程序主入口
+// 初始化各个模块，启动主循环任务
+// Copyright (C) 2023-2024, Xiaodong Wang <
+
+// 初始化各个模块，启动主循环任务
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
+// ESP-IDF 头文件
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -24,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+// 各个模块的头文件
 #include "board.h"
 #include "board_config.h"
 #include "led.h"
@@ -38,6 +32,7 @@
 #include "adkey.h"
 #include "i2s_mic.h"
 
+// 设备模型 + 自动联动规则
 #include "device_model.h"
 #include "automation.h"
 #include "wifi_sta.h"
@@ -46,64 +41,80 @@
 #include "selftest.h"
 #include "astra_glue.h"
 
+// 把语音指令变成动作
 #if CONFIG_APP_SERIAL_DEBUG_ENABLE
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_adc/adc_oneshot.h"
 #endif
 
+// 主循环周期运行
 static const char *TAG = "MAIN";
 
 
-/* 功能：把语音指令变成动作 */
-static void voice_on_cmd(voice_cmd_t cmd, void *user)
-{
+// 把语音指令变成动作
+static void voice_on_cmd(voice_cmd_t cmd, void *user) {
     (void)user;
+    // 导入控制源
     const ctrl_source_t src = SRC_VOICE;
 
     switch (cmd) {
-    /* 功能：单个房间的灯 */
+    // 单个房间的灯
+    // VOICE_CMD_LED_LIVING_ON/OFF  -> DEV_LED_LIVING
     case VOICE_CMD_LED_LIVING_ON:   device_set_power(DEV_LED_LIVING,  true,  src); break;
     case VOICE_CMD_LED_LIVING_OFF:  device_set_power(DEV_LED_LIVING,  false, src); break;
+    
+    // VOICE_CMD_LED_KITCHEN_ON/OFF  -> DEV_LED_KITCHEN
     case VOICE_CMD_LED_KITCHEN_ON:  device_set_power(DEV_LED_KITCHEN, true,  src); break;
     case VOICE_CMD_LED_KITCHEN_OFF: device_set_power(DEV_LED_KITCHEN, false, src); break;
+
+    // VOICE_CMD_LED_BEDROOM_ON/OFF  -> DEV_LED_BEDROOM
     case VOICE_CMD_LED_BEDROOM_ON:  device_set_power(DEV_LED_BEDROOM, true,  src); break;
     case VOICE_CMD_LED_BEDROOM_OFF: device_set_power(DEV_LED_BEDROOM, false, src); break;
+
+    // VOICE_CMD_LED_BATH_ON/OFF     -> DEV_LED_BATH
     case VOICE_CMD_LED_BATH_ON:     device_set_power(DEV_LED_BATH,    true,  src); break;
     case VOICE_CMD_LED_BATH_OFF:    device_set_power(DEV_LED_BATH,    false, src); break;
 
-    /* 功能：全部灯一起开关 */
+    // 全部灯一起开关
     case VOICE_CMD_LED_ALL_ON:
     case VOICE_CMD_LED_ALL_OFF: {
         bool on = (cmd == VOICE_CMD_LED_ALL_ON);
+
+        // 全开只开灯和风扇
+        // 房间灯
         device_set_power(DEV_LED_LIVING,  on, src);
+        // 厨房灯
         device_set_power(DEV_LED_KITCHEN, on, src);
+        // 卧室灯
         device_set_power(DEV_LED_BEDROOM, on, src);
+        // 浴室灯
         device_set_power(DEV_LED_BATH,    on, src);
         break;
     }
 
-    /* 功能：风扇开关 */
+    // 风扇开关
     case VOICE_CMD_FAN_ON:  device_set_power(DEV_FAN, true,  src); break;
     case VOICE_CMD_FAN_OFF: device_set_power(DEV_FAN, false, src); break;
 
-    /* 功能：窗户开关 */
+    // 窗户开关
     case VOICE_CMD_WINDOW_OPEN:  device_set_power(DEV_WINDOW, true,  src); break;
     case VOICE_CMD_WINDOW_CLOSE: device_set_power(DEV_WINDOW, false, src); break;
 
-    /* 功能：门开关 */
+    // 门开关
     case VOICE_CMD_DOOR_OPEN:  device_set_power(DEV_DOOR, true,  src); break;
     case VOICE_CMD_DOOR_CLOSE: device_set_power(DEV_DOOR, false, src); break;
 
-    /* 功能：窗帘开关 */
+    // 窗帘开关
     case VOICE_CMD_CURTAIN_OPEN:  device_set_power(DEV_CURTAIN, true,  src); break;
     case VOICE_CMD_CURTAIN_CLOSE: device_set_power(DEV_CURTAIN, false, src); break;
 
-    /* 功能：问温度就播报 */
+    // 问温度就播报
     case VOICE_CMD_QUERY_TEMP: {
         const sensor_data_t *d = sensor_get_last();
         if (d->valid_temp) {
-            voice_speak_temp(d->temperature, -1.0f);   /* 功能：只播温度 */
+            // 只播温度
+            voice_speak_temp(d->temperature, -1.0f);
         } else {
             voice_speak("温度传感器未连接");
         }
@@ -112,7 +123,8 @@ static void voice_on_cmd(voice_cmd_t cmd, void *user)
     case VOICE_CMD_QUERY_HUMI: {
         const sensor_data_t *d = sensor_get_last();
         if (d->valid_temp) {
-            voice_speak_temp(-100.0f, d->humidity);    /* 功能：只播湿度 */
+            // 只播湿度
+            voice_speak_temp(-100.0f, d->humidity);
         } else {
             voice_speak("湿度传感器未连接");
         }
@@ -136,7 +148,7 @@ static void voice_on_cmd(voice_cmd_t cmd, void *user)
         break;
     }
 
-    /* 功能：自动模式总开关 */
+    // 自动模式总开关
     case VOICE_CMD_AUTO_ON:
         automation_set_enabled(true);
         automation_save();
@@ -150,35 +162,34 @@ static void voice_on_cmd(voice_cmd_t cmd, void *user)
 
     case VOICE_CMD_NONE:
     default:
-        return;   /* 功能：啥也不干 */
+        // 啥也不干
+        return;
     }
 
-    /* 功能：本地操作也上报 */
+    // 本地操作也上报
     mqtt_publish_event(voice_cmd_name(cmd));
     voice_speak("好的");
 }
 
 
-/* 功能：五键的名字表 */
+// 五键的名字表
 static const char *const s_adkey_names[ADKEY_NUM] = { "1", "2", "3", "4", "OK" };
 
-/* 功能：五键事件只打日志 */
-static void adkey_on_event(adkey_id_t id, adkey_event_t ev, void *user)
-{
+// 五键事件只打日志
+static void adkey_on_event(adkey_id_t id, adkey_event_t ev, void *user) {
     (void)user;
     static const char *const s_ev_names[] = { "DOWN", "UP", "CLICK", "LONG" };
 
-    /* 功能：打按下那次的读数 */
+    // 打按下那次的读数
     ESP_LOGI(TAG, "[ADKEY] %s %s (触发读数=%dmV, 当前=%dmV)",
              s_adkey_names[id], s_ev_names[ev], adkey_last_mv(), adkey_raw_mv());
 }
 
-/* 功能：按键切换自动和风扇 */
-static void key_on_event(key_id_t id, key_event_t ev, void *user)
-{
+// 按键切换自动和风扇
+static void key_on_event(key_id_t id, key_event_t ev, void *user) {
     (void)user;
 
-    /* 功能：自检时不响应按键 */
+    // 自检时不响应按键
     if (selftest_is_active()) {
         return;
     }
@@ -209,36 +220,40 @@ static void key_on_event(key_id_t id, key_event_t ev, void *user)
 }
 
 
-/* 功能：主循环周期干活 */
-static void app_loop_task(void *arg)
-{
+// 主循环周期干活
+static void app_loop_task(void *arg) {
     (void)arg;
+    // 周期跑自动联动规则 + 定时上报传感器数据
+    const uint32_t tick_ms= 500;
 
-    const uint32_t tick_ms        = 500;
-
-    /* 功能：按周期上报传感器 */
+    // 按周期上报传感器
     const uint32_t mqtt_sensor_period_ms = CONFIG_APP_MQTT_PUBLISH_SENSOR_MS;
-    uint32_t mqtt_sensor_acc = mqtt_sensor_period_ms;   /* 功能：开机先发一次 */
 
+    // 开机先发一次
+    uint32_t mqtt_sensor_acc = mqtt_sensor_period_ms;   
     bool last_mqtt = false;
 
     for (;;) {
-        /* 功能：跑自动联动规则 */
+        // 跑自动联动规则
         automation_tick(sensor_get_last());
 
-        /* 功能：定时把数据发出去 */
+        // 定时把数据发出去
         mqtt_sensor_acc += tick_ms;
         if (mqtt_sensor_acc >= mqtt_sensor_period_ms) {
             mqtt_sensor_acc = 0;
+
+            // MQTT连接了才发
             if (mqtt_is_connected()) {
                 mqtt_publish_sensor(sensor_get_last());
             }
         }
 
-        /* 功能：灯跟着网络状态变 */
+        // 灯跟着网络状态变
         bool mqtt_now = mqtt_is_connected();
         if (mqtt_now != last_mqtt) {
             last_mqtt = mqtt_now;
+
+            // MQTT连上了就亮青灯，没连上但WiFi连上了就亮绿灯
             if (mqtt_now) {
                 led_status_set(LED_STATUS_MQTT_OK);
             } else if (wifi_is_connected()) {
@@ -246,23 +261,21 @@ static void app_loop_task(void *arg)
             }
         }
 
-        /* 功能：推着自检往前走 */
+        // 推着自检往前走
         if (selftest_is_active()) {
             selftest_tick();
         }
 
-        /* 功能：屏幕交给界面层 */
-
+        // 屏幕交给界面层
         vTaskDelay(pdMS_TO_TICKS(tick_ms));
     }
 }
 
 
+// 串口调试台
 #if CONFIG_APP_SERIAL_DEBUG_ENABLE
 
-/* 功能：把刷屏的日志压下去 */
-
-/* 功能：列出最吵的日志名 */
+// 列出最吵的日志名
 static const char *const s_noisy_tags[] = {
     "NimBLE",
     "ble_app",
@@ -276,19 +289,19 @@ static const char *const s_noisy_tags[] = {
 };
 #define NOISY_TAG_CNT (sizeof(s_noisy_tags) / sizeof(s_noisy_tags[0]))
 
-/* 功能：开机只压蓝牙日志 */
+// 开机只压蓝牙日志
 static const char *const s_ble_tags[] = { "NimBLE", "ble_app", "BLE" };
 #define BLE_TAG_CNT (sizeof(s_ble_tags) / sizeof(s_ble_tags[0]))
 
-static void log_set_tags(const char *const *tags, size_t cnt, esp_log_level_t lv)
-{
+// 批量设置日志等级
+static void log_set_tags(const char *const *tags, size_t cnt, esp_log_level_t lv) {
     for (size_t i = 0; i < cnt; i++) {
         esp_log_level_set(tags[i], lv);
     }
 }
 
-static esp_log_level_t log_level_from_char(char c)
-{
+// 把字符变成日志等级
+static esp_log_level_t log_level_from_char(char c) {
     switch (c) {
     case 'n': return ESP_LOG_NONE;
     case 'e': return ESP_LOG_ERROR;
@@ -300,8 +313,8 @@ static esp_log_level_t log_level_from_char(char c)
     }
 }
 
-static const char *log_level_name(esp_log_level_t lv)
-{
+// 把日志等级变成字符
+static const char *log_level_name(esp_log_level_t lv) {
     switch (lv) {
     case ESP_LOG_NONE:    return "NONE";
     case ESP_LOG_ERROR:   return "ERROR";
@@ -313,8 +326,8 @@ static const char *log_level_name(esp_log_level_t lv)
     }
 }
 
-static void console_print_help(void)
-{
+// 打印串口调试台帮助
+static void console_print_help(void) {
     printf("\n");
     printf("==================== 串口调试台 ====================\n");
     printf("  status                  查看全部设备 + 传感器状态\n");
@@ -347,10 +360,10 @@ static void console_print_help(void)
     printf("====================================================\n\n");
 }
 
-/* 功能：扫五键接在哪 */
+// 扫五键接在哪
 static void console_keyscan(int seconds)
 {
-    /* 功能：只测 IO10 */
+    // 只测 IO10
     printf("  [keyscan] 监听 %d 秒：IO10 电压一变就打印（变化阈值 8mV，50ms 采样）。\n", seconds);
     printf("  [keyscan] 空闲 ≈3128mV；按住某个键会跳到对应分压档。\n");
     printf("  [keyscan] 键档参考：OK≈0mV / 3≈615 / 1≈1380 / 4≈1968 / 2≈2638 mV\n");
@@ -365,7 +378,7 @@ static void console_keyscan(int seconds)
         if (mv < min_mv) { min_mv = mv; }
         if (mv > max_mv) { max_mv = mv; }
 
-        /* 功能：变了才打印 */
+        // 变了才打印
         if (last_mv < 0 || mv - last_mv >= 8 || last_mv - mv >= 8) {
             printf("  [keyscan] t=%6lldms  IO10=%4dmV%s\n",
                    (long long)((esp_timer_get_time() - t0) / 1000), mv,
@@ -422,11 +435,12 @@ static void console_print_voice_cmds(void)
     printf("\n\n用法：say led_living_on\n\n");
 }
 
-/* 功能：看麦克风有没有声 */
+// 看麦克风有没有声
 static void console_mic_level(void)
 {
-    /* 功能：先读一小段再打印 */
-    int16_t probe[320] = { 0 };     /* 功能：采一小段音频 */
+    // 先读一小段再打印
+    // 采一小段音频
+    int16_t probe[320] = { 0 };
     size_t  got = 0;
     const esp_err_t err = i2s_mic_read(probe, sizeof(probe) / sizeof(probe[0]), &got, 300);
 
@@ -466,14 +480,14 @@ static void console_mic_level(void)
     printf("  （想看波形统计：mic dump 3）\n\n");
 }
 
-/* 功能：把 all 展开成动作 */
+// 把 all 展开成动作
 static void console_dev_action(const char *dev, const char *action, int value)
 {
     if (strcmp(dev, "all") == 0) {
         if (strcmp(action, "off") == 0) {
             device_all_off(SRC_MQTT);
         } else if (strcmp(action, "on") == 0) {
-            /* 功能：全开只开灯和风扇 */
+            // 全开只开灯和风扇
             device_set_power(DEV_LED_LIVING,  true, SRC_MQTT);
             device_set_power(DEV_LED_KITCHEN, true, SRC_MQTT);
             device_set_power(DEV_LED_BEDROOM, true, SRC_MQTT);
@@ -516,7 +530,7 @@ static void console_dev_action(const char *dev, const char *action, int value)
 
 static void console_handle_line(char *line)
 {
-    /* 功能：去掉行尾回车换行 */
+    // 去掉行尾回车换行
     size_t len = strlen(line);
     while (len > 0 && (line[len - 1] == '\r' || line[len - 1] == '\n' ||
                        line[len - 1] == ' ')) {
@@ -536,7 +550,7 @@ static void console_handle_line(char *line)
         return;
     }
 
-    /* 功能：数字统一取出来 */
+    // 数字统一取出来
     int num0 = (n >= 3) ? atoi(a2) : 0;
     int num1 = (n >= 4) ? v1       : 0;
     int num2 = (n >= 5) ? v2       : 0;
@@ -580,7 +594,7 @@ static void console_handle_line(char *line)
             }
         }
     } else if (strcmp(cmd, "say") == 0) {
-        /* 功能：假装说了一句话 */
+        // 假装说了一句话
         if (n < 2) { printf("  用法: say <voice_cmd>（help-voice 看列表）\n"); return; }
         voice_cmd_t vc = voice_cmd_from_name(a1);
         if (vc == VOICE_CMD_NONE) {
@@ -599,7 +613,7 @@ static void console_handle_line(char *line)
         }
         printf("  [adkey] IO10=%dmV 按下=%s\n", adkey_raw_mv(), any ? "是" : "否");
     } else if (strcmp(cmd, "mic") == 0) {
-        /* 功能：插上就能测麦 */
+        // 插上就能测麦
         if (n >= 2 && strcmp(a1, "dump") == 0) {
             int secs = (n >= 3) ? atoi(a2) : 3;
             i2s_mic_dump(secs);
@@ -607,7 +621,7 @@ static void console_handle_line(char *line)
             console_mic_level();
         }
     } else if (strcmp(cmd, "voice-test") == 0) {
-        /* 功能：打印能听懂的词 */
+        // 打印能听懂的词
         voice_esp_sr_print_commands();
         if (!voice_esp_sr_is_ready()) {
             printf("  ⚠ ESP-SR 未就绪。若是当前固件没开 ESP-SR 开关，\n");
@@ -624,7 +638,7 @@ static void console_handle_line(char *line)
         }
         console_keyscan(secs);
     } else if (strcmp(cmd, "test") == 0) {
-        /* 功能：进退和跑自检 */
+        // 进退和跑自检
         if (n >= 2 && strcmp(a1, "run") == 0) {
             selftest_run_current();
             printf("  selftest: run current item\n");
@@ -660,7 +674,7 @@ static void console_handle_line(char *line)
             printf("        要看 BLE 细节：log all  （看完再 log quiet）\n");
         } else if (strcmp(a1, "all") == 0) {
             esp_log_level_set("*", ESP_LOG_INFO);
-            /* 功能：这些日志名也要改回 */
+            // 这些日志名也要改回
             log_set_tags(s_noisy_tags, NOISY_TAG_CNT, ESP_LOG_INFO);
             printf("  [log] 全部 tag -> INFO（BLE 日志会重新开始刷）\n");
         } else {
@@ -680,12 +694,12 @@ static void console_handle_line(char *line)
     }
 }
 
-/* 功能：串口收命令 */
+// 串口收命令
 static void serial_console_task(void *arg)
 {
     (void)arg;
 
-    /* 功能：装个只收的串口 */
+    // 装个只收的串口
     esp_err_t err = uart_driver_install(UART_NUM_0, 512, 0, 0, NULL, 0);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "uart_driver_install(UART0) failed: %s, 串口调试台不可用",
@@ -716,7 +730,8 @@ static void serial_console_task(void *arg)
                 console_handle_line(line);
                 pos = 0;
             }
-        } else if (ch == 0x08 || ch == 0x7F) {   /* 功能：退格键 */
+        // 退格键
+        } else if (ch == 0x08 || ch == 0x7F) {
             if (pos > 0) {
                 pos--;
             }
@@ -728,7 +743,7 @@ static void serial_console_task(void *arg)
 #endif
 
 
-/* 功能：开机启动整个系统 */
+// 开机启动整个系统
 void app_main(void)
 {
     ESP_LOGI(TAG, " ");
@@ -738,11 +753,11 @@ void app_main(void)
     ESP_LOGI(TAG, "###########################################################");
 
 #if CONFIG_APP_SERIAL_DEBUG_ENABLE
-    /* 功能：开机先压住蓝牙日志 */
+    // 开机先压住蓝牙日志
     log_set_tags(s_ble_tags, BLE_TAG_CNT, ESP_LOG_WARN);
 #endif
 
-    /* 功能：备好存配置的地方 */
+    // 备好存配置的地方
     esp_err_t nvs_err = nvs_flash_init();
     if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "NVS 需要擦除后重建 (%s)", esp_err_to_name(nvs_err));
@@ -750,39 +765,40 @@ void app_main(void)
         nvs_err = nvs_flash_init();
     }
     if (nvs_err != ESP_OK) {
-        /* 功能：存不了就用默认值 */
+        // 存不了就用默认值
         ESP_LOGE(TAG, "NVS init failed: %s（阈值将无法保存）", esp_err_to_name(nvs_err));
     }
 
-    /* 功能：把硬件准备好 */
+    // 把硬件准备好
     led_status_set(LED_STATUS_BOOT);
-    (void)board_init();   /* 功能：缺配件也接着跑 */
+    // 缺配件也接着跑
+    (void)board_init();
 
-    /* 功能：建好设备状态表 */
+    // 建好设备状态表
     ESP_ERROR_CHECK(device_model_init());
 
-    /* 功能：舵机松劲省电 */
+    // 舵机松劲省电
     (void)servo_detach(SERVO_CURTAIN);
     (void)servo_detach(SERVO_WINDOW);
     (void)servo_detach(SERVO_DOOR);
     ESP_LOGI(TAG, "servos detached (idle, no holding torque)");
 
-    /* 功能：启动自动联动 */
+    // 启动自动联动
     ESP_ERROR_CHECK(automation_init());
 
-    /* 功能：开机画面交给界面 */
+    // 开机画面交给界面
 #if CONFIG_APP_OLED_ENABLE
-    /* 功能：屏幕由界面层接管 */
+    // 屏幕由界面层接管
 #endif
 
-    /* 功能：连上路由器 */
+    // 连上路由器
     led_status_set(LED_STATUS_WIFI_CONNECTING);
     if (wifi_init_sta() != ESP_OK) {
         ESP_LOGE(TAG, "WiFi 初始化失败，将以离线模式运行");
         led_status_set(LED_STATUS_ERROR);
     }
 
-    /* 功能：等联网成功再上云 */
+    // 等联网成功再上云
     if (!wifi_is_connected()) {
         ESP_LOGI(TAG, "等待 WiFi 获取 IP（最多 10 秒）再启动 MQTT ...");
         wifi_wait_connected(10000);
@@ -791,39 +807,39 @@ void app_main(void)
         ESP_LOGW(TAG, "WiFi 仍未连上，MQTT 会自行边连边重试");
     }
 
-    /* 功能：连上云收命令 */
+    // 连上云收命令
     if (mqtt_app_start() != ESP_OK) {
         ESP_LOGE(TAG, "MQTT 启动失败，手机端控制不可用");
     } else {
-        /* 功能：状态一变就上报 */
+        // 状态一变就上报
         mqtt_app_bind_device_events();
     }
 
-    /* 功能：再开一条蓝牙链路 */
+    // 再开一条蓝牙链路
 #if CONFIG_APP_BLE_ENABLE
     if (ble_app_start() != ESP_OK) {
         ESP_LOGW(TAG, "BLE 启动失败，手机蓝牙控制不可用（WiFi/MQTT 不受影响）");
     }
 #endif
 
-    /* 功能：定时采传感器 */
+    // 定时采传感器
     if (sensor_start_auto(CONFIG_APP_SENSOR_PERIOD_MS) != ESP_OK) {
         ESP_LOGW(TAG, "传感器自动采样启动失败");
     }
 
-    /* 功能：接上语音指令 */
+    // 接上语音指令
     voice_register_cb(voice_on_cmd, NULL);
 
-    /* 功能：接上按键 */
+    // 接上按键
     key_register_cb(key_on_event, NULL);
 
-    /* 功能：接上五键键盘 */
+    // 接上五键键盘
     adkey_register_cb(adkey_on_event, NULL);
 
-    /* 功能：起界面管屏幕 */
+    // 起界面管屏幕
     astra_ui_start();
 
-    /* 功能：起主循环 */
+    // 起主循环
     xTaskCreate(app_loop_task, "app_loop", 4096, NULL, 5, NULL);
 
 #if CONFIG_APP_SERIAL_DEBUG_ENABLE

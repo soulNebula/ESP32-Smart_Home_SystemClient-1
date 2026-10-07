@@ -1,14 +1,3 @@
-/*
- * 模块：
- *   板级开机准备。上电后按顺序把整块板子的硬件拉起来，被 main.c 调用，
- *   自己向下调 i2c_bus / adc_bus / led / servo / fan / sensor /
- *   oled / key / adkey / voice / i2s_mic 这些模块。
- *
- * 功能：
- *   按顺序把硬件准备好
- *   缺配件也照常开机
- *   打印引脚对照表
- */
 #include "board.h"
 
 #include "esp_log.h"
@@ -28,15 +17,16 @@
 
 static const char *TAG = "BOARD";
 
-static bool s_inited = false;   /* 功能：记住已开机 */
+// 记住已开机
+static bool s_inited = false;
 
-/* 功能：记下各件初始化结果 */
+// 记下各件初始化结果
 typedef struct {
     const char *name;
     esp_err_t   err;
 } init_result_t;
 
-/* 功能：按顺序把硬件准备好 */
+// 按顺序把硬件准备好
 esp_err_t board_init(void)
 {
     if (s_inited) {
@@ -50,7 +40,7 @@ esp_err_t board_init(void)
     init_result_t results[14];
     int n = 0;
 
-    /* 功能：先建共享总线 */
+    // 先建共享总线
     results[n].name = "i2c_bus";
     results[n].err  = i2c_bus_init();
     const esp_err_t i2c_err = results[n].err;
@@ -60,7 +50,7 @@ esp_err_t board_init(void)
     results[n].err  = adc_bus_init();
     n++;
 
-    /* 功能：列一下挂着谁 */
+    // 列一下挂着谁
     if (i2c_err == ESP_OK) {
         int found = i2c_bus_scan();
         ESP_LOGI(TAG, "I2C scan done, %d device(s) found", found);
@@ -68,7 +58,7 @@ esp_err_t board_init(void)
         ESP_LOGW(TAG, "I2C bus init failed (0x%x), skip scan", i2c_err);
     }
 
-    /* 功能：起灯舵机风扇 */
+    // 起灯舵机风扇
     results[n].name = "led strip x4";
     results[n].err  = led_init();
     n++;
@@ -81,17 +71,17 @@ esp_err_t board_init(void)
     results[n].err  = fan_init();
     n++;
 
-    /* 功能：起温湿度光照雨滴 */
+    // 起温湿度光照雨滴
     results[n].name = "sensors";
     results[n].err  = sensor_init();
     n++;
 
-    /* 功能：起屏幕 */
+    // 起屏幕
     results[n].name = "oled";
     results[n].err  = oled_init();
     n++;
 
-    /* 功能：起按键和语音 */
+    // 起按键和语音
     results[n].name = "key x2";
     results[n].err  = key_init();
     n++;
@@ -105,13 +95,13 @@ esp_err_t board_init(void)
     n++;
 
 #if BSP_I2S_MIC_ENABLE
-    /* 功能：起麦克风，没插也能测 */
+    // 起麦克风，没插也能测
     results[n].name = "i2s mic";
     results[n].err  = i2s_mic_init();
     n++;
 #endif
 
-    /* 功能：报告各件结果 */
+    // 报告各件结果
     int failed = 0;
     for (int i = 0; i < n; i++) {
         if (results[i].err == ESP_OK) {
@@ -123,10 +113,11 @@ esp_err_t board_init(void)
         }
     }
 
-    /* 功能：实读一次看拾音 */
+    // 实读一次看拾音
 #if BSP_I2S_MIC_ENABLE
     if (results[n - 1].err == ESP_OK) {
-        int16_t probe[320] = { 0 };     /* 功能：读一小段音频 */
+        // 读一小段音频
+        int16_t probe[320] = { 0 };
         size_t  got = 0;
         (void)i2s_mic_read(probe, sizeof(probe) / sizeof(probe[0]), &got, 300);
         i2s_mic_level_t lv;
@@ -152,19 +143,19 @@ esp_err_t board_init(void)
         return ESP_OK;
     }
 
-    /* 功能：缺件不算致命 */
+    // 缺件不算致命
     ESP_LOGW(TAG, "======== board init done, %d/%d module(s) unavailable ========",
              failed, n);
     return ESP_ERR_NOT_FOUND;
 }
 
-/* 功能：交出总线把手 */
+// 交出总线把手
 i2c_master_bus_handle_t board_get_i2c_bus(void)
 {
     return i2c_bus_get_handle();
 }
 
-/* 功能：打印引脚对照表 */
+// 打印引脚对照表
 void board_print_pinmap(void)
 {
     ESP_LOGI(TAG, "----------------- PIN MAP (source: board_config.h) -----------------");

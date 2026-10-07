@@ -1,18 +1,3 @@
-/*
- * 模块：
- *   连路由器（对外接口见 wifi_sta.h）。上电把网卡和事件收好，
- *   喊一声开始连就立刻返回，连上没连上由回调里的标志回答；
- *   掉线就按设定重连，一直连不上可以选着重启自己。
- *   被 main.c 调用；向下用乐鑫那套 WiFi 库，连上后网络那条路
- *   （mqtt_app.c）才通。断网时本地那些功能照常干。
- *
- * 功能：
- *   上电把网卡准备好
- *   连上就点亮指示灯
- *   掉线自动重连
- *   报出地址和信号强弱
- */
-
 #include "wifi_sta.h"
 
 #include <stdio.h>
@@ -36,20 +21,23 @@
 
 static const char *TAG = "wifi_sta";
 
-/* 功能：隔多久看一眼连上没有 */
+// 隔多久看一眼连上没有
 #define WIFI_WAIT_POLL_MS   100
-/* 功能：地址字符串够长了 */
+// 地址字符串够长了
 #define WIFI_IP_STR_LEN     16
 
-static bool                     s_inited   = false;   /* 功能：弄过了就不再弄 */
-static volatile bool            s_got_ip   = false;   /* 功能：地址拿到没 */
+// 弄过了就不再弄
+static bool                     s_inited   = false;
+// 地址拿到没
+static volatile bool            s_got_ip   = false;
 static char                     s_ip_str[WIFI_IP_STR_LEN] = "0.0.0.0";
-static int                      s_retry    = 0;       /* 功能：连着失败几次了 */
+// 连着失败几次了
+static int                      s_retry    = 0;
 static esp_netif_t             *s_netif    = NULL;
 static esp_event_handler_instance_t s_wifi_evt_inst = NULL;
 static esp_event_handler_instance_t s_ip_evt_inst   = NULL;
 
-/* 功能：把名字拷进定长格子 */
+// 把名字拷进定长格子
 static void copy_into_u8(uint8_t *dst, size_t dst_size, const char *src)
 {
     if (dst == NULL || dst_size == 0) {
@@ -85,7 +73,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             led_status_set(LED_STATUS_WIFI_CONNECTING);
 
             if (CONFIG_APP_WIFI_MAX_RETRY == 0) {
-                /* 功能：设成零就一直重试 */
+                // 设成零就一直重试
                 ESP_LOGW(TAG, "disconnected (reason=%u), reconnecting forever ...", reason);
                 esp_wifi_connect();
             } else {
@@ -130,7 +118,7 @@ esp_err_t wifi_init_sta(void)
 
     esp_err_t err;
 
-    /* 功能：存东西的地方先备好 */
+    // 存东西的地方先备好
     err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "nvs_flash_init: %s, erasing and retrying", esp_err_to_name(err));
@@ -144,7 +132,7 @@ esp_err_t wifi_init_sta(void)
 
     ESP_ERROR_CHECK(esp_netif_init());
 
-    /* 功能：别人建过就算了，不算错 */
+    // 别人建过就算了，不算错
     err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s", esp_err_to_name(err));
@@ -162,7 +150,7 @@ esp_err_t wifi_init_sta(void)
     wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&init_cfg));
 
-    /* 功能：连上断开都记下来 */
+    // 连上断开都记下来
     err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                               &wifi_event_handler, NULL, &s_wifi_evt_inst);
     if (err != ESP_OK) {
@@ -180,14 +168,14 @@ esp_err_t wifi_init_sta(void)
     copy_into_u8(wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid), CONFIG_APP_WIFI_SSID);
     copy_into_u8(wifi_cfg.sta.password, sizeof(wifi_cfg.sta.password), CONFIG_APP_WIFI_PASSWORD);
 
-    /* 功能：没密码就得放宽 */
+    // 没密码就得放宽
     if (CONFIG_APP_WIFI_PASSWORD[0] == '\0') {
         wifi_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
     } else {
         wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     }
 
-    /* 功能：把名字密码交上去 */
+    // 把名字密码交上去
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
 
@@ -257,14 +245,14 @@ esp_err_t wifi_get_mac_suffix(char *buf, size_t len)
     if (buf == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    /* 功能：六个字加个零，最少七格 */
+    // 六个字加个零，最少七格
     if (len < 7) {
         return ESP_ERR_INVALID_SIZE;
     }
 
     err = esp_wifi_get_mac(WIFI_IF_STA, mac);
     if (err != ESP_OK) {
-        /* 功能：没连上就直接读芯片号 */
+        // 没连上就直接读芯片号
         err = esp_read_mac(mac, ESP_MAC_WIFI_STA);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "read mac failed: %s", esp_err_to_name(err));

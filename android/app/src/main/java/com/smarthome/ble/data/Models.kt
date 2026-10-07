@@ -1,19 +1,6 @@
-/*
- * 模块：
- *   数据模型。把 data/Json.kt 解出来的文字，装成设备状态、设备总状态、
- *   传感器读数、回执和阈值这些格子。字段名和包号都照 data/Contract.kt 的约定，
- *   FrameCodec 按包的第一个字节认出是谁，再交给 SmartHomeViewModel 存起来给界面用。
- *
- * 功能：
- *   存一路设备状态
- *   存全部设备状态
- *   存传感器读数
- *   存回执和事件
- *   按包号解包
- */
 package com.smarthome.ble.data
 
-// 功能：一路设备的开关和值
+// 一路设备的开关和值
 data class DevState(
     val power: Boolean = false,
     val level: Int = 0,
@@ -22,7 +9,7 @@ data class DevState(
     val b: Int = 255,
 ) {
     companion object {
-        /* 功能：从文字读出设备 */
+        // 从文字读出设备
         fun from(o: Map<String, Any?>?): DevState = DevState(
             power = Json.boolOf(o, "power", false),
             level = Json.int(o, "level", 0).coerceIn(0, 100),
@@ -33,7 +20,7 @@ data class DevState(
     }
 }
 
-// 功能：板子报的全部状态
+// 板子报的全部状态
 data class StatePayload(
     val devices: Map<String, DevState> = emptyMap(),
     val auto: Boolean? = null,
@@ -44,10 +31,10 @@ data class StatePayload(
     fun dev(id: String): DevState = devices[id] ?: DevState()
 
     companion object {
-        // 功能：四路灯加风扇
+        // 四路灯加风扇
         private val KNOWN_DEVICE_KEYS = Proto.LAMPS + Proto.ACTUATORS + listOf(Proto.DEV_FAN)
 
-        /* 功能：把文字变成状态 */
+        // 把文字变成状态
         fun from(o: Map<String, Any?>): StatePayload {
             val devs = LinkedHashMap<String, DevState>()
             for (key in KNOWN_DEVICE_KEYS) {
@@ -65,7 +52,7 @@ data class StatePayload(
     }
 }
 
-// 功能：温湿度光照雨滴
+// 温湿度光照雨滴
 data class SensorPayload(
     val temp: Double? = null,
     val humi: Double? = null,
@@ -77,11 +64,11 @@ data class SensorPayload(
     val rainDetected: Boolean? = null,
 ) {
     companion object {
-        /* 功能：从文字读出读数 */
+        // 从文字读出读数
         fun from(o: Map<String, Any?>): SensorPayload = SensorPayload(
             temp = Json.num(o, "temp"),
             humi = Json.num(o, "humi"),
-            // 功能：没说就当有效
+            // 没说就当有效
             tempValid = Json.bool(o, "temp_valid") ?: (Json.num(o, "temp") != null),
             lux = Json.num(o, "lux"),
             lightPct = Json.num(o, "light_pct"),
@@ -92,16 +79,16 @@ data class SensorPayload(
     }
 }
 
-// 功能：一条回执或事件
+// 一条回执或事件
 data class AckPayload(val action: String?, val ok: Boolean?, val detail: String?)
 
-// 功能：板子回报的阈值
+// 板子回报的阈值
 data class ConfigPayloadView(
     val raw: Map<String, Any?>,
     val cfg: ConfigPayload,
 ) {
     companion object {
-        /* 功能：从文字读出阈值 */
+        // 从文字读出阈值
         fun from(o: Map<String, Any?>): ConfigPayloadView {
             val d = ConfigPayload()
             return ConfigPayloadView(
@@ -122,7 +109,7 @@ data class ConfigPayloadView(
     }
 }
 
-// 功能：收到的包分几路
+// 收到的包分几路
 sealed interface Inbound {
     data class State(val payload: StatePayload, val json: String) : Inbound
     data class Sensor(val payload: SensorPayload, val json: String) : Inbound
@@ -132,10 +119,10 @@ sealed interface Inbound {
     data class Unknown(val typeCode: Int, val json: String) : Inbound
 }
 
-// 功能：按首字节认包
+// 按首字节认包
 object FrameCodec {
 
-    /* 功能：认包号分给各家 */
+    // 认包号分给各家
     fun decode(frame: ByteArray): Inbound {
         if (frame.isEmpty()) return Inbound.Unknown(-1, "")
         val type = frame[0].toInt() and 0xFF

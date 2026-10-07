@@ -1,17 +1,3 @@
-/*
- * 模块：
- *   蓝牙收发。整个 App 只有这里碰蓝牙：找板子、连板子、把命令写下去、
- *   把板子推上来的包交给 SmartHomeViewModel。命令怎么写、UUID 是多少，
- *   全按 data/Contract.kt 里的约定来，这块是双方说好的死规矩。
- *
- * 功能：
- *   要蓝牙权限
- *   按名字前缀找板子
- *   连上并开通知
- *   分片发命令
- *   收板子的推送
- *   出错了记一句
- */
 package com.smarthome.ble.ble
 
 import android.Manifest
@@ -56,7 +42,7 @@ data class BleConnectionState(
     val deviceName: String? = null,
     val deviceAddress: String? = null,
     val rssi: Int? = null,
-    // 功能：谈好的单包大小
+    // 谈好的单包大小
     val mtu: Int? = null,
     val mtuRequested: Int = MTU_TARGET,
     val mtuOk: Boolean = false,
@@ -66,14 +52,14 @@ data class BleConnectionState(
 ) {
     companion object {
         const val MTU_TARGET = 517
-        // 功能：够放一包状态
+        // 够放一包状态
         const val MTU_MIN = 256
     }
 }
 
-/* 功能：查有没有蓝牙权限 */
+// 查有没有蓝牙权限
 object BlePermissions {
-    // 功能：按系统版本要权限
+    // 按系统版本要权限
     fun required(): Array<String> =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(
@@ -113,7 +99,7 @@ class BleManager(private val appContext: Context) {
     @Volatile
     var listener: Listener? = null
 
-    // 功能：状态只在后台线程动
+    // 状态只在后台线程动
     private var gatt: BluetoothGatt? = null
     private var rxChar: BluetoothGattCharacteristic? = null
     private var txChar: BluetoothGattCharacteristic? = null
@@ -125,7 +111,7 @@ class BleManager(private val appContext: Context) {
     private var mtuFallbackTried = false
     private var mtuToken = 0
     private val seen = LinkedHashMap<String, DiscoveredDevice>()
-    // 功能：记住板子报过的名字
+    // 记住板子报过的名字
     private val nameCache = HashMap<String, String>()
     private var st = BleConnectionState()
     private var scanning = false
@@ -136,7 +122,7 @@ class BleManager(private val appContext: Context) {
         const val MTU_TIMEOUT_MS = 4000L
     }
 
-    // 功能：查一下蓝牙开着没
+    // 查一下蓝牙开着没
     fun refreshAdapterState() {
         h.post {
             val available = adapter != null
@@ -160,7 +146,7 @@ class BleManager(private val appContext: Context) {
         }
     }
 
-    /* 功能：开始找板子 */
+    // 开始找板子
     @SuppressLint("MissingPermission")
     fun startScan() {
         h.post {
@@ -171,7 +157,7 @@ class BleManager(private val appContext: Context) {
             val scanner = ad.bluetoothLeScanner
             if (scanner == null) { warn("无法获取 BLE 扫描器"); return@post }
 
-            // 功能：认服务号不认名字
+            // 认服务号不认名字
             val filters = listOf(
                 ScanFilter.Builder()
                     .setServiceUuid(ParcelUuid(Proto.SERVICE_UUID))
@@ -179,7 +165,7 @@ class BleManager(private val appContext: Context) {
             )
             val settings = ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-                // 功能：来一条报一条
+                // 来一条报一条
                 .setReportDelay(0L)
                 .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
                 .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
@@ -196,7 +182,7 @@ class BleManager(private val appContext: Context) {
             try {
                 scanner.startScan(filters, settings, scanCallback)
             } catch (e: Throwable) {
-                // 功能：过滤不稳就自己筛
+                // 过滤不稳就自己筛
                 log("带过滤的扫描启动失败(${e.javaClass.simpleName})，改为无过滤扫描")
                 try {
                     scanner.startScan(null, settings, scanCallback)
@@ -208,7 +194,7 @@ class BleManager(private val appContext: Context) {
         }
     }
 
-    /* 功能：停止找板子 */
+    // 停止找板子
     @SuppressLint("MissingPermission")
     fun stopScan() {
         h.post {
@@ -226,7 +212,7 @@ class BleManager(private val appContext: Context) {
         }
     }
 
-    /* 功能：连上一块板子 */
+    // 连上一块板子
     @SuppressLint("MissingPermission")
     fun connect(dev: BluetoothDevice, name: String?) {
         h.post {
@@ -272,13 +258,13 @@ class BleManager(private val appContext: Context) {
         }
     }
 
-    /* 功能：断开这块板子 */
+    // 断开这块板子
     @SuppressLint("MissingPermission")
     fun disconnect() {
         h.post { disconnectInternal(silent = false) }
     }
 
-    /* 功能：发一包命令给板子 */
+    // 发一包命令给板子
     fun send(type: Byte, json: String) {
         val frame = Proto.frame(type, json)
         h.post {
@@ -303,7 +289,7 @@ class BleManager(private val appContext: Context) {
         }
     }
 
-    /* 功能：把新状态报给界面 */
+    // 把新状态报给界面
     private fun emitState() {
         val snapshot = st
         main.post { listener?.onConnectionState(snapshot) }
@@ -313,14 +299,14 @@ class BleManager(private val appContext: Context) {
         main.post { listener?.onLog(line) }
     }
 
-    /* 功能：记一句提醒 */
+    // 记一句提醒
     private fun warn(msg: String) {
         st = st.copy(warning = msg)
         emitState()
         log("WARN $msg")
     }
 
-    /* 功能：记一句错误 */
+    // 记一句错误
     private fun fail(msg: String) {
         st = st.copy(phase = BlePhase.ERROR, lastError = msg, statusText = msg)
         emitState()
@@ -336,7 +322,7 @@ class BleManager(private val appContext: Context) {
         null
     }
 
-    /* 功能：把结果报给界面 */
+    // 把结果报给界面
     private fun publishScanResults() {
         val list = seen.values.sortedByDescending { it.rssi }
         main.post { listener?.onScanResults(list) }
@@ -407,7 +393,7 @@ class BleManager(private val appContext: Context) {
         val dev = result.device ?: return
         val rec = result.scanRecord
 
-        // 功能：名字可能晚点到
+        // 名字可能晚点到
         val recName = rec?.deviceName
         val cachedName = try {
             dev.name
@@ -416,10 +402,10 @@ class BleManager(private val appContext: Context) {
         }
         val name = recName ?: cachedName ?: nameCache[dev.address]
 
-        // 功能：服务号最靠得住
+        // 服务号最靠得住
         val hasService = rec?.serviceUuids?.any { it.uuid == Proto.SERVICE_UUID } == true
 
-        // 功能：名字或服务号对得上
+        // 名字或服务号对得上
         val nameMatches = name != null && name.startsWith(Proto.NAME_PREFIX)
         if (!nameMatches && !hasService) return
 
@@ -583,7 +569,7 @@ class BleManager(private val appContext: Context) {
                     },
                 )
                 emitState()
-                // 功能：连上先要一次状态
+                // 连上先要一次状态
                 log("发送 get(0x03) 请求一次 state+sensor")
                 sendNow(g, Proto.frame(Proto.Down.GET, Proto.cmdGet()))
                 pumpWrites()
@@ -622,7 +608,7 @@ class BleManager(private val appContext: Context) {
         }
     }
 
-    /* 功能：把收到的包交上去 */
+    // 把收到的包交上去
     private fun deliverFrame(data: ByteArray) {
         if (data.isEmpty()) return
         main.post { listener?.onFrame(data) }
@@ -639,7 +625,7 @@ class BleManager(private val appContext: Context) {
         if (!ok) fail("discoverServices() 返回 false")
     }
 
-    /* 功能：谈不成就带警告继续 */
+    // 谈不成就带警告继续
     private fun onMtuFailed(reason: String) {
         st = st.copy(
             mtu = null,
@@ -655,7 +641,7 @@ class BleManager(private val appContext: Context) {
         discoverServices(g)
     }
 
-    /* 功能：超时换个小值再试 */
+    // 超时换个小值再试
     private fun armMtuTimeout(requested: Int) {
         val token = ++mtuToken
         h.postDelayed({
@@ -676,7 +662,7 @@ class BleManager(private val appContext: Context) {
         }, MTU_TIMEOUT_MS)
     }
 
-    /* 功能：打开板子的推送 */
+    // 打开板子的推送
     @SuppressLint("MissingPermission")
     private fun enableNotify(g: BluetoothGatt, tx: BluetoothGattCharacteristic) {
         val hasNotify = (tx.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0
@@ -721,7 +707,7 @@ class BleManager(private val appContext: Context) {
         }
     }
 
-    /* 功能：插队马上发一包 */
+    // 插队马上发一包
     @SuppressLint("MissingPermission")
     private fun sendNow(g: BluetoothGatt, frame: ByteArray) {
         val rx = rxChar ?: run { warn("RX 特征未就绪，无法发送"); return }
@@ -730,7 +716,7 @@ class BleManager(private val appContext: Context) {
         }
     }
 
-    /* 功能：排队一包一包发 */
+    // 排队一包一包发
     @SuppressLint("MissingPermission")
     private fun pumpWrites() {
         if (writeInFlight) return
@@ -740,7 +726,7 @@ class BleManager(private val appContext: Context) {
         writeFrame(g, rx, frame) { ok -> writeInFlight = ok }
     }
 
-    /* 功能：真正写一包出去 */
+    // 真正写一包出去
     @SuppressLint("MissingPermission")
     private fun writeFrame(
         g: BluetoothGatt,
@@ -754,7 +740,7 @@ class BleManager(private val appContext: Context) {
             onResult(false)
             return
         }
-        // 功能：能不回执就不回执
+        // 能不回执就不回执
         val noRsp =
             (rx.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0 &&
                 (rx.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) == 0
@@ -789,6 +775,6 @@ class BleManager(private val appContext: Context) {
         }
     }
 
-    /* 功能：问一下通知开了没 */
+    // 问一下通知开了没
     fun isNotifyEnabled(): Boolean = notifyEnabled
 }

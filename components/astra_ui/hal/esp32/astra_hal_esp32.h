@@ -1,25 +1,15 @@
-/*
- * 模块：
- *   界面层在 ESP32 上的硬件实现。用 u8g2 在内存里画好一整屏，再交给
- *   main 组件的屏幕驱动送出去，被 astra_rocket.cpp 装上。
- *
- * 功能：
- *   内存里画一屏
- *   按页刷到屏幕
- *   读按键和发声
- */
 #pragma once
 #ifndef ASTRA_HAL_ESP32_H_
 #define ASTRA_HAL_ESP32_H_
 
 #include "../hal.h"
 
-/* 功能：main 送来的三个口 */
+// main 送来的三个口
 void astra_hal_set_flush_page_cb(void (*flush_page)(uint8_t page, const uint8_t *data));
 void astra_hal_set_key_down_cb(bool (*key_down)(uint8_t idx));
 void astra_hal_set_beep_cb(void (*beep)(float freq));
 
-/* 功能：ESP32 版硬件实现 */
+// ESP32 版硬件实现
 class AstraHALEsp32 : public HAL {
 public:
   ~AstraHALEsp32() override = default;

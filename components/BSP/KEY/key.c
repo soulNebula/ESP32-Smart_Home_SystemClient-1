@@ -1,16 +1,3 @@
-/*
- * 模块：
- *   按键。扫两个板载小按钮，认出按下、抬起、单击、长按，
- *   结果送给 main.c 和 adkey.c 那边用。
- *   自己起一个任务反复看电平，不占用别的地方。
- *
- * 功能：
- *   轮着看按键电平
- *   抖动几次数够才算
- *   按久了算长按
- *   回调里别干重活
- *   回调里别卡太久
- */
 #include <stdbool.h>
 
 #include "freertos/FreeRTOS.h"
@@ -25,27 +12,36 @@
 
 static const char *TAG = "key";
 
-#define KEY_SCAN_PERIOD_MS      10      /* 功能：每十毫秒看一次 */
-#define KEY_TASK_STACK_SIZE     6144    /* 功能：栈不能给小 */
-                                         /* 功能：给小了会崩 */
-#define KEY_TASK_PRIORITY       4       /* 功能：任务的优先级 */
+// 每十毫秒看一次
+#define KEY_SCAN_PERIOD_MS      10
+// 栈不能给小
+#define KEY_TASK_STACK_SIZE     6144
+                                         // 给小了会崩
+// 任务的优先级
+#define KEY_TASK_PRIORITY       4
 
-/* 功能：连读三次才算稳 */
+// 连读三次才算稳
 #define KEY_DEBOUNCE_SAMPLES    (BSP_KEY_DEBOUNCE_MS / KEY_SCAN_PERIOD_MS)
 
 _Static_assert(KEY_DEBOUNCE_SAMPLES >= 1, "BSP_KEY_DEBOUNCE_MS 必须 >= 按键扫描周期");
 
-/* 功能：记一个键的状态 */
+// 记一个键的状态
 typedef struct {
-    int      stable_level;      /* 功能：消抖后的电平 */
-    int      raw_level;         /* 功能：刚读到的电平 */
-    uint32_t same_cnt;          /* 功能：连着读了几次 */
-    bool     pressed;           /* 功能：现在按着没有 */
-    bool     long_reported;     /* 功能：长按报过没有 */
-    int64_t  press_start_us;    /* 功能：这次按下的时刻 */
+    // 消抖后的电平
+    int      stable_level;
+    // 刚读到的电平
+    int      raw_level;
+    // 连着读了几次
+    uint32_t same_cnt;
+    // 现在按着没有
+    bool     pressed;
+    // 长按报过没有
+    bool     long_reported;
+    // 这次按下的时刻
+    int64_t  press_start_us;
 } key_ctx_t;
 
-/* 功能：两个键的引脚 */
+// 两个键的引脚
 static const gpio_num_t s_key_gpio[BSP_KEY_COUNT] = {
     BSP_KEY_GPIO_KEY1,
     BSP_KEY_GPIO_KEY2,
@@ -56,17 +52,19 @@ _Static_assert(sizeof(s_key_gpio) / sizeof(s_key_gpio[0]) == BSP_KEY_COUNT,
 
 static key_ctx_t s_ctx[BSP_KEY_COUNT];
 
-static key_cb_t s_cb;           /* 功能：只留最后一个 */
+// 只留最后一个
+static key_cb_t s_cb;
 static void    *s_cb_user;
-static bool     s_inited;       /* 功能：避免重复初始化 */
+// 避免重复初始化
+static bool     s_inited;
 
-/* 功能：这个电平算按下吗 */
+// 这个电平算按下吗
 static inline bool key_level_is_pressed(int level)
 {
     return (level == BSP_KEY_ACTIVE_LEVEL);
 }
 
-/* 功能：把事件报给上层 */
+// 把事件报给上层
 static void key_emit(key_id_t id, key_event_t ev)
 {
     if (s_cb != NULL) {
@@ -74,7 +72,7 @@ static void key_emit(key_id_t id, key_event_t ev)
     }
 }
 
-/* 功能：看一遍两个键 */
+// 看一遍两个键
 static void key_scan_once(void)
 {
     const int64_t now_us = esp_timer_get_time();
@@ -83,38 +81,40 @@ static void key_scan_once(void)
         key_ctx_t  *k  = &s_ctx[i];
         const key_id_t id = (key_id_t)i;
         if (s_key_gpio[i] == GPIO_NUM_NC) {
-            continue;   /* 功能：没接的键不扫 */
+            // 没接的键不扫
+            continue;
         }
         const int   raw = gpio_get_level(s_key_gpio[i]);
 
         k->raw_level = raw;
 
         if (raw == k->stable_level) {
-            /* 功能：没变就把计数清零 */
+            // 没变就把计数清零
             k->same_cnt = 0;
         } else {
             k->same_cnt++;
             if (k->same_cnt < KEY_DEBOUNCE_SAMPLES) {
-                continue;   /* 功能：还没稳再等等 */
+                // 还没稳再等等
+                continue;
             }
 
-            /* 功能：读够次数才算真变 */
+            // 读够次数才算真变
             k->same_cnt     = 0;
             k->stable_level = raw;
 
             if (key_level_is_pressed(raw)) {
-                /* 功能：稳定按下 */
+                // 稳定按下
                 k->pressed        = true;
                 k->long_reported  = false;
                 k->press_start_us = now_us;
                 key_emit(id, KEY_EVENT_DOWN);
             } else {
-                /* 功能：稳定抬起 */
+                // 稳定抬起
                 const int64_t held_ms = (now_us - k->press_start_us) / 1000;
 
                 k->pressed = false;
 
-                /* 功能：卡在边上补报一次 */
+                // 卡在边上补报一次
                 if (!k->long_reported && held_ms >= BSP_KEY_LONG_PRESS_MS) {
                     k->long_reported = true;
                     key_emit(id, KEY_EVENT_LONG_PRESS);
@@ -122,7 +122,7 @@ static void key_scan_once(void)
 
                 key_emit(id, KEY_EVENT_UP);
 
-                /* 功能：短按才算单击 */
+                // 短按才算单击
                 if (!k->long_reported && held_ms < BSP_KEY_LONG_PRESS_MS) {
                     key_emit(id, KEY_EVENT_CLICK);
                 }
@@ -131,7 +131,7 @@ static void key_scan_once(void)
             continue;
         }
 
-        /* 功能：按够了就报长按一次 */
+        // 按够了就报长按一次
         if (k->pressed && !k->long_reported &&
             (now_us - k->press_start_us) >= (int64_t)BSP_KEY_LONG_PRESS_MS * 1000) {
             k->long_reported = true;
@@ -140,7 +140,7 @@ static void key_scan_once(void)
     }
 }
 
-/* 功能：反复看按键的任务 */
+// 反复看按键的任务
 static void key_scan_task(void *arg)
 {
     (void)arg;
@@ -152,23 +152,25 @@ static void key_scan_task(void *arg)
     TickType_t last_wake = xTaskGetTickCount();
     while (1) {
         key_scan_once();
-        /* 功能：按固定周期走不漂 */
+        // 按固定周期走不漂
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(KEY_SCAN_PERIOD_MS));
     }
 }
 
-/* 功能：把按键准备好 */
+// 把按键准备好
 esp_err_t key_init(void)
 {
     if (s_inited) {
-        return ESP_OK;              /* 功能：来过就直接返回 */
+        // 来过就直接返回
+        return ESP_OK;
     }
 
-    /* 功能：配成输入加上拉 */
+    // 配成输入加上拉
     uint64_t pin_mask = 0;
     for (int i = 0; i < BSP_KEY_COUNT; i++) {
         if (s_key_gpio[i] == GPIO_NUM_NC) {
-            continue;   /* 功能：弃用的键不配脚 */
+            // 弃用的键不配脚
+            continue;
         }
         pin_mask |= (1ULL << (uint32_t)s_key_gpio[i]);
     }
@@ -176,9 +178,11 @@ esp_err_t key_init(void)
     const gpio_config_t io_cfg = {
         .pin_bit_mask = pin_mask,
         .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = GPIO_PULLUP_ENABLE,     /* 功能：另头接地要上拉 */
+        // 另头接地要上拉
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE,      /* 功能：只用轮询不用中断 */
+        // 只用轮询不用中断
+        .intr_type    = GPIO_INTR_DISABLE,
     };
 
     esp_err_t err = gpio_config(&io_cfg);
@@ -187,10 +191,11 @@ esp_err_t key_init(void)
         return err;
     }
 
-    /* 功能：先按实际电平当基准 */
+    // 先按实际电平当基准
     for (int i = 0; i < BSP_KEY_COUNT; i++) {
         if (s_key_gpio[i] == GPIO_NUM_NC) {
-            s_ctx[i].stable_level   = 1;   /* 功能：弃用的键当没按 */
+            // 弃用的键当没按
+            s_ctx[i].stable_level   = 1;
             s_ctx[i].raw_level      = 1;
             s_ctx[i].pressed        = false;
             continue;
@@ -205,7 +210,7 @@ esp_err_t key_init(void)
         s_ctx[i].press_start_us = esp_timer_get_time();
     }
 
-    /* 功能：把扫键任务起起来 */
+    // 把扫键任务起起来
     if (xTaskCreate(key_scan_task, "key_scan", KEY_TASK_STACK_SIZE, NULL,
                     KEY_TASK_PRIORITY, NULL) != pdPASS) {
         ESP_LOGE(TAG, "create key scan task failed");
@@ -218,7 +223,7 @@ esp_err_t key_init(void)
     return ESP_OK;
 }
 
-/* 功能：登记按键回调 */
+// 登记按键回调
 esp_err_t key_register_cb(key_cb_t cb, void *user_data)
 {
     if (cb == NULL) {
@@ -230,13 +235,13 @@ esp_err_t key_register_cb(key_cb_t cb, void *user_data)
     return ESP_OK;
 }
 
-/* 功能：查现在按着没有 */
+// 查现在按着没有
 bool key_is_pressed(key_id_t id)
 {
     if ((int)id < 0 || (int)id >= BSP_KEY_COUNT) {
         return false;
     }
 
-    /* 功能：不加锁只读个大概 */
+    // 不加锁只读个大概
     return s_ctx[id].pressed;
 }

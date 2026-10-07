@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-模块：
+
   语音识别的电脑版调试器。板子上那条语音链是麦克风采音、离线识别唤醒词、
   再认命令词；这里用电脑麦克风和 vosk 离线识别把同样的事做一遍，
   方便改命令词、看 JSON 事件，不用一趟趟烧板子。
@@ -16,7 +16,7 @@
   路径带中文的地方识别库打不开，所以优先前面两个。
   不喊唤醒词的那种一直听着；要喊唤醒词的那种一开始是关着的，等喊了才开。
 
-功能：
+
   听麦克风认唤醒词
   匹配命令词
   打印 JSON 事件
@@ -33,11 +33,12 @@ from pathlib import Path
 from urllib.request import urlretrieve
 
 WAKE_DEFAULT = "你好小智"
-WINDOW_SECONDS = 6.0            # 与固件 VOICE_SR_MN_DURATION_MS 一致
+# 与固件 VOICE_SR_MN_DURATION_MS 一致
+WINDOW_SECONDS = 6.0
 MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip"
 MODEL_DIR_NAME = "vosk-model-small-cn"
 
-# 功能：命令词表要跟固件一致
+# 命令词表要跟固件一致
 CMDS = [
     ("打开客厅灯", "led_living_on",  {"dev": "led_living", "action": "on"}),
     ("关闭客厅灯", "led_living_off", {"dev": "led_living", "action": "off"}),
@@ -68,14 +69,14 @@ CMDS = [
 
 
 def norm(text: str) -> str:
-    """功能：去掉标点和空格"""
+    """去掉标点和空格"""
     for ch in "，。！？、,.;;:：\"' \t":
         text = text.replace(ch, "")
     return text.strip()
 
 
 def match_command(text: str):
-    """功能：把听到的话对上命令词"""
+    """把听到的话对上命令词"""
     t = norm(text)
     if not t:
         return None
@@ -94,25 +95,25 @@ def match_command(text: str):
 
 
 def emit(event: str, **fields):
-    """功能：打一行结果出去"""
+    """打一行结果出去"""
     obj = {"ts": int(time.time()), "event": event}
     obj.update(fields)
     print(json.dumps(obj, ensure_ascii=False), flush=True)
 
 
-# 功能：找模型、缺了就下
+# 找模型、缺了就下
 def _is_model_dir(p: Path) -> bool:
-    """功能：有 am 目录才算模型"""
+    """有 am 目录才算模型"""
     return p.is_dir() and (p / "am").is_dir()
 
 
 def _default_model_home() -> Path:
-    """功能：模型默认放系统目录"""
+    """模型默认放系统目录"""
     return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "vosk-models"
 
 
 def find_model(args) -> str:
-    """功能：挨个地方试着找模型"""
+    """挨个地方试着找模型"""
     names = [MODEL_DIR_NAME, MODEL_DIR_NAME + "-0.22"]
     candidates = []
     if args.model:
@@ -131,7 +132,7 @@ def find_model(args) -> str:
 
 
 def download_model(target_dir: Path) -> bool:
-    """功能：下载并解压中文模型"""
+    """下载并解压中文模型"""
     zip_path = target_dir / (MODEL_DIR_NAME + ".zip")
     print(f"首次运行需要中文识别模型（约 42MB），正在下载到 {zip_path} ...")
     try:
@@ -145,7 +146,7 @@ def download_model(target_dir: Path) -> bool:
         with zipfile.ZipFile(zip_path) as z:
             z.extractall(target_dir)
         zip_path.unlink(missing_ok=True)
-        # 功能：目录名去掉版本号
+        # 目录名去掉版本号
         extracted = target_dir / (MODEL_DIR_NAME + "-0.22")
         renamed = target_dir / MODEL_DIR_NAME
         if extracted.is_dir() and not renamed.exists():
@@ -154,12 +155,13 @@ def download_model(target_dir: Path) -> bool:
     except KeyboardInterrupt:
         print("\n  下载被中断")
         return False
-    except Exception as e:  # 网络失败等
+    # 网络失败等
+    except Exception as e:
         print(f"\n  下载失败：{e}")
         return False
 
 
-# 功能：开麦克风实时听
+# 开麦克风实时听
 def run_mic(args, model_path: str):
     import sounddevice as sd
 
@@ -175,8 +177,9 @@ def run_mic(args, model_path: str):
     wake_norm = norm(args.wake)
     need_wake = not args.no_wake
     window_sec = args.window
-    awake = not need_wake               # --no-wake 时一直处于"听命令"状态
-    # 功能：不喊唤醒词就一直听
+    # --no-wake 时一直处于"听命令"状态
+    awake = not need_wake
+    # 不喊唤醒词就一直听
     window_deadline = float("inf") if not need_wake else 0.0
     last_partial = ""
 
@@ -192,23 +195,24 @@ def run_mic(args, model_path: str):
                 return
             t = norm(text)
 
-            # 功能：听见唤醒词就开窗口
+            # 听见唤醒词就开窗口
             if not awake and wake_norm and wake_norm in t:
                 awake = True
                 window_deadline = time.time() + window_sec
                 emit("wake", word=args.wake, raw=text)
                 return
 
-            # 功能：窗口里就认命令词
+            # 窗口里就认命令词
             if awake:
                 if time.time() > window_deadline:
-                    # 功能：超时了，回休眠
+                    # 超时了，回休眠
                     awake = False
                     return
                 hit = match_command(text)
                 if hit:
                     vc, cn, mqtt = hit
-                    window_deadline = time.time() + window_sec  # 功能：说话就再等六秒
+                    # 说话就再等六秒
+                    window_deadline = time.time() + window_sec
                     emit("cmd", voice_cmd=vc, text=cn, raw=text, mqtt=mqtt)
                 else:
                     emit("unknown", text=text)
@@ -230,7 +234,7 @@ def run_mic(args, model_path: str):
                                channels=1, callback=on_audio):
             while True:
                 time.sleep(0.2)
-                # 功能：等不到话就回休眠
+                # 等不到话就回休眠
                 if awake and time.time() > window_deadline:
                     awake = False
                     emit("timeout")
@@ -240,7 +244,7 @@ def run_mic(args, model_path: str):
         emit("exit")
 
 
-# 功能：不用麦克风，直接喂一句
+# 不用麦克风，直接喂一句
 def run_say(args):
     text = "".join(args.say) if isinstance(args.say, list) else args.say
     print(f"  [模拟语音] {text}")
@@ -271,7 +275,7 @@ def main():
     ap.add_argument("--no-download", action="store_true", help="禁止自动下载模型")
     args = ap.parse_args()
 
-    # 功能：列命令词表就走人
+    # 列命令词表就走人
     if args.list:
         print("============ 语音命令词表（与固件 s_cmds[] 一致） ============")
         print(f"  唤醒词： 「{args.wake}」")
@@ -281,15 +285,17 @@ def main():
         print("=" * 62)
         return
 
-    # 功能：直接注入，不用模型
+    # 直接注入，不用模型
     if args.say:
         run_say(args)
         return
 
-    # 功能：开设备前先备好模型
+    # 开设备前先备好模型
     try:
-        from vosk import Model  # noqa: F401  提前验证依赖
-        import sounddevice  # noqa: F401
+        # noqa: F401  提前验证依赖
+        from vosk import Model
+        # noqa: F401
+        import sounddevice
     except ImportError as e:
         print(f"缺少依赖：{e.name}。请先运行： pip install vosk sounddevice")
         return

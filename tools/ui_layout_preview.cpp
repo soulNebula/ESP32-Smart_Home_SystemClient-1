@@ -1,28 +1,14 @@
-/*
- * 模块：
- *   屏幕排版的电脑预览。不接板子不烧录，把首页要显示的字画到内存里，
- *   算一算每个元素的占位范围，打印一张字符画和重叠报告。
- *   本工程的屏幕只有 64 像素高，中文行高大，凭手感给坐标很容易把两行叠一起，
- *   所以改排版前先在这儿看一眼。用的是和固件同一份配置和同一套字库，
- *   由 tools/run_ui_preview.ps1 编译运行，排版参数在 astra_ui 的 config.h。
- *   判定重叠要上下和左右两个方向都压住才算，只压住一边只是同一行的两段。
- *   屏幕初始化那一步必须走：它会顺手建好屏幕信息和内存，缺了画的时候会崩。
- *
- * 功能：
- *   画一遍新排版
- *   画一遍旧排版
- *   报告有没有重叠
- */
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
 extern "C" {
-#include "u8g2.h"          /* 功能：字库头文件 */
+// 字库头文件
+#include "u8g2.h"
 }
 
-/* 功能：共用固件的排版参数 */
+// 共用固件的排版参数
 #include "config.h"
 
 #define SCR_W 128
@@ -30,9 +16,10 @@ extern "C" {
 #define SCR_TILES (SCR_H / 8)
 
 static u8g2_t  g_u8g2;
-static uint8_t *g_buf = nullptr;   /* 功能：指向屏幕内存 */
+// 指向屏幕内存
+static uint8_t *g_buf = nullptr;
 
-/* 功能：空回调，只画不发送 */
+// 空回调，只画不发送
 static uint8_t u8x8_dummy_msg(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr)
 {
     (void)u8x8; (void)msg; (void)arg_int; (void)arg_ptr;
@@ -57,7 +44,7 @@ struct Ink {
     int  h() const { return empty() ? 0 : (y1 - y0 + 1); }
 };
 
-/* 功能：画完对比前后找范围 */
+// 画完对比前后找范围
 template <typename F>
 static Ink draw_and_measure(const char *name, F _draw)
 {
@@ -96,7 +83,7 @@ static float text_w(const std::string &s)
     return (float)u8g2_GetUTF8Width(&g_u8g2, s.c_str());
 }
 
-/* 功能：首页要显示的内容 */
+// 首页要显示的内容
 static const char *TITLE     = "智能家居";
 static const char *AUTO      = "自动开";
 static const char *TEMPHUMI  = "25.3C 52%";
@@ -129,7 +116,7 @@ static std::vector<Ink> layout_new(void)
     return inks;
 }
 
-/* 功能：修改前的老坐标，对照用 */
+// 修改前的老坐标，对照用
 static std::vector<Ink> layout_old(void)
 {
     const astra::config &cfg = astra::getUIConfig();
@@ -172,7 +159,7 @@ static void report(const char *title, const std::vector<Ink> &inks, bool ascii_a
         printf("  %-26s %-16s %4dpx  %s", k.name.c_str(), k.empty() ? "(空)" : xr, k.h(), yr);
         if (i > 0) {
             const Ink &p = inks[i - 1];
-            /* 功能：上下左右都压住才算 */
+            // 上下左右都压住才算
             const bool y_ov = (!k.empty() && !p.empty() && k.y0 <= p.y1);
             const bool x_ov = (!k.empty() && !p.empty() && !(k.x1 < p.x0 || k.x0 > p.x1));
             if (y_ov && x_ov) {
@@ -188,7 +175,7 @@ static void report(const char *title, const std::vector<Ink> &inks, bool ascii_a
     }
     printf("  → 真正重叠：%d 处\n", overlaps);
 
-    /* 功能：看哪几行挤在一起 */
+    // 看哪几行挤在一起
     printf("\n  ---- 纵向占用（每格 1px，0..63）----\n");
     for (size_t i = 0; i < inks.size(); i++) {
         const Ink &k = inks[i];
@@ -215,7 +202,7 @@ static void report(const char *title, const std::vector<Ink> &inks, bool ascii_a
 
 int main(void)
 {
-    /* 功能：必须走这个初始化 */
+    // 必须走这个初始化
     u8g2_Setup_ssd1306_i2c_128x64_noname_f(&g_u8g2, U8G2_R0, u8x8_dummy_msg, u8x8_dummy_msg);
     g_buf = g_u8g2.tile_buf_ptr;
     if (g_buf == nullptr) { printf("u8g2 setup failed\n"); return 1; }

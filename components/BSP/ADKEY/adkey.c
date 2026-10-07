@@ -1,23 +1,10 @@
-/*
- * 模块：
- *   五位 AD 键盘。给一个信号脚读电压，就知道按了哪个键，按键事件往上给
- *   main.c 和界面导航；被 board.c 开机初始化，自己向下调 adc_bus 取电压。
- *   判定规则单独放在 adkey_logic.h。
- *
- * 功能：
- *   认一遍没按键时的电压
- *   每 10ms 扫一次键
- *   抖动要连看几次才算
- *   按住两秒算长按
- *   OK 键电压最低别漏掉
- *   起一个常驻扫描任务
- */
 #include "adkey.h"
 
 #include <string.h>
 
 #include "adc_bus.h"
-#include "adkey_logic.h"   /* 功能：判定规则在这个头里 */
+// 判定规则在这个头里
+#include "adkey_logic.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -25,15 +12,19 @@
 
 static const char *TAG = "ADKEY";
 
-/* 功能：可调参数 */
-#define ADKEY_SCAN_MS           10      /* 功能：多久扫一次键 */
-#define ADKEY_DEBOUNCE_SAMPLES  3       /* 功能：连看三次才算数 */
-#define ADKEY_LONG_PRESS_MS     2000    /* 功能：按住多久算长按 */
-#define ADKEY_IDLE_MIN_MV       3000    /* 功能：太低就不采信 */
+// 可调参数
+// 多久扫一次键
+#define ADKEY_SCAN_MS           10
+// 连看三次才算数
+#define ADKEY_DEBOUNCE_SAMPLES  3
+// 按住多久算长按
+#define ADKEY_LONG_PRESS_MS     2000
+// 太低就不采信
+#define ADKEY_IDLE_MIN_MV       3000
 #define ADKEY_TASK_STACK_SIZE   4096
 #define ADKEY_TASK_PRIORITY     4
 
-/* 功能：OK 键是直接接地那档 */
+// OK 键是直接接地那档
 static const adkey_logic_cfg_t s_match_cfg = {
     .key_mv         = { ADKEY_KEY1_MV, ADKEY_KEY2_MV, ADKEY_KEY3_MV, ADKEY_KEY4_MV },
     .tolerance      = ADKEY_TOLERANCE_MV,
@@ -43,42 +34,47 @@ static const adkey_logic_cfg_t s_match_cfg = {
     .ok_margin      = ADKEY_OK_MARGIN_MV,
 };
 
-/* 功能：运行时的状态变量 */
+// 运行时的状态变量
 typedef struct {
-    bool     pressed;         /* 功能：抖完还按着吗 */
-    bool     long_reported;   /* 功能：长按报过没有 */
+    // 抖完还按着吗
+    bool     pressed;
+    // 长按报过没有
+    bool     long_reported;
     int64_t  press_start_us;
 } adkey_ctx_t;
 
 static adkey_ctx_t s_ctx[ADKEY_NUM];
-static adkey_id_t  s_stable_key = ADKEY_NUM;   /* 功能：当前认的是哪个键 */
-static int         s_idle_mv = 3128;           /* 功能：没按键时的电压 */
+// 当前认的是哪个键
+static adkey_id_t  s_stable_key = ADKEY_NUM;
+// 没按键时的电压
+static int         s_idle_mv = 3128;
 static adkey_cb_t  s_cb = NULL;
 static void       *s_cb_user = NULL;
 static bool        s_inited = false;
 
-/* 功能：把事件发给外面 */
+// 把事件发给外面
 static void adkey_emit(adkey_id_t id, adkey_event_t ev)
 {
     if (s_cb != NULL) {
-        /* 功能：这里别做耗时事 */
+        // 这里别做耗时事
         s_cb(id, ev, s_cb_user);
     }
 }
 
-/* 功能：读一次电压 */
+// 读一次电压
 static int adkey_read_mv(void)
 {
     const int mv = adc_bus_read_mv_avg(ADC_CHANNEL_9, 4);
-    return (mv >= 0) ? mv : (s_idle_mv + 1);   /* 功能：读失败当空闲 */
+    // 读失败当空闲
+    return (mv >= 0) ? mv : (s_idle_mv + 1);
 }
 
-/* 功能：电压落到哪个键 */
+// 电压落到哪个键
 static adkey_id_t adkey_match(int mv)
 {
     const int r = adkey_logic_match(mv, s_idle_mv, &s_match_cfg);
 
-    /* 功能：落不进档就限速告警 */
+    // 落不进档就限速告警
     int top_band = 0;
     for (int i = 0; i < 4; i++) {
         const int hi = (int)s_match_cfg.key_mv[i] + s_match_cfg.tolerance;
@@ -101,20 +97,20 @@ static adkey_id_t adkey_match(int mv)
     return (adkey_id_t)r;
 }
 
-/* 功能：键的名字，打日志用 */
+// 键的名字，打日志用
 static const char *const s_key_names[ADKEY_NUM] = { "1", "2", "3", "4", "OK" };
 
-/* 功能：记下按下那次的电压 */
+// 记下按下那次的电压
 static int s_last_key_mv = -1;
 
-/* 功能：扫一次键 */
+// 扫一次键
 static void adkey_scan_once(void)
 {
     const int        mv      = adkey_read_mv();
     const adkey_id_t now_key = adkey_match(mv);
     const int64_t    now_us  = esp_timer_get_time();
 
-    /* 功能：记下按下时的最低值 */
+    // 记下按下时的最低值
     static int s_press_min_mv = -1;
     if (s_stable_key != ADKEY_NUM) {
         if (s_press_min_mv < 0 || mv < s_press_min_mv) {
@@ -123,10 +119,11 @@ static void adkey_scan_once(void)
     }
 
     if (now_key == s_stable_key) {
-        return;   /* 功能：没变就直接返回 */
+        // 没变就直接返回
+        return;
     }
 
-    /* 功能：变了要连看几次 */
+    // 变了要连看几次
     static adkey_id_t pending_key = ADKEY_NUM;
     static int        pending_cnt = 0;
 
@@ -136,18 +133,18 @@ static void adkey_scan_once(void)
         pending_key = now_key;
         pending_cnt = 1;
     }
-    /* 功能：OK 键一次就算数 */
+    // OK 键一次就算数
     const int need = (pending_key == ADKEY_OK) ? 1 : ADKEY_DEBOUNCE_SAMPLES;
     if (pending_cnt < need) {
         return;
     }
 
-    /* 功能：认下这次变化 */
+    // 认下这次变化
     const adkey_id_t prev_key = s_stable_key;
     s_stable_key = pending_key;
 
     if (prev_key != ADKEY_NUM) {
-        /* 功能：上一个键松开了 */
+        // 上一个键松开了
         adkey_ctx_t *k = &s_ctx[prev_key];
         const int64_t held_ms = (now_us - k->press_start_us) / 1000;
 
@@ -158,31 +155,33 @@ static void adkey_scan_once(void)
         s_press_min_mv = -1;
 
         if (!k->long_reported && held_ms < ADKEY_LONG_PRESS_MS) {
-            adkey_emit(prev_key, ADKEY_EVENT_CLICK);   /* 功能：短按算点击 */
+            // 短按算点击
+            adkey_emit(prev_key, ADKEY_EVENT_CLICK);
         }
         adkey_emit(prev_key, ADKEY_EVENT_UP);
     }
 
     if (now_key != ADKEY_NUM) {
-        /* 功能：新键按下了 */
+        // 新键按下了
         adkey_ctx_t *k = &s_ctx[now_key];
         k->pressed        = true;
         k->long_reported  = false;
         k->press_start_us = now_us;
-        s_last_key_mv     = mv;          /* 功能：让回调能打真值 */
+        // 让回调能打真值
+        s_last_key_mv     = mv;
         s_press_min_mv    = mv;
         adkey_emit(now_key, ADKEY_EVENT_DOWN);
     }
 }
 
-/* 功能：常驻扫描任务 */
+// 常驻扫描任务
 static void adkey_scan_task(void *arg)
 {
     (void)arg;
 
     TickType_t last_wake = xTaskGetTickCount();
     for (;;) {
-        /* 功能：按够久就补发长按 */
+        // 按够久就补发长按
         if (s_stable_key != ADKEY_NUM) {
             adkey_ctx_t *k = &s_ctx[s_stable_key];
             if (k->pressed && !k->long_reported &&
@@ -197,7 +196,7 @@ static void adkey_scan_task(void *arg)
     }
 }
 
-/* 功能：开机把键盘准备好 */
+// 开机把键盘准备好
 esp_err_t adkey_init(void)
 {
     if (s_inited) {
@@ -205,7 +204,7 @@ esp_err_t adkey_init(void)
         return ESP_OK;
     }
 
-    /* 功能：开机先量空闲电压 */
+    // 开机先量空闲电压
     int sum = 0, cnt = 0;
     for (int i = 0; i < 32; i++) {
         const int mv = adc_bus_read_mv_avg(ADC_CHANNEL_9, 4);
@@ -218,7 +217,8 @@ esp_err_t adkey_init(void)
     if (cnt > 0) {
         const int avg = sum / cnt;
         if (avg >= ADKEY_IDLE_MIN_MV) {
-            s_idle_mv = avg;   /* 功能：正常就拿它当基线 */
+            // 正常就拿它当基线
+            s_idle_mv = avg;
         } else {
             ESP_LOGW(TAG, "开机基线 %dmV 过低（开机时按着键？），保留默认 %dmV",
                      avg, s_idle_mv);
@@ -244,7 +244,8 @@ esp_err_t adkey_init(void)
 
 esp_err_t adkey_register_cb(adkey_cb_t cb, void *user_data)
 {
-    s_cb      = cb;         /* 功能：后登记的顶掉前面 */
+    // 后登记的顶掉前面
+    s_cb      = cb;
     s_cb_user = user_data;
     return ESP_OK;
 }
@@ -259,7 +260,7 @@ int adkey_raw_mv(void)
     return adkey_read_mv();
 }
 
-/* 功能：取按下那次的电压 */
+// 取按下那次的电压
 int adkey_last_mv(void)
 {
     return s_last_key_mv;

@@ -1,20 +1,3 @@
-/*
- * 模块：
- *   连路由上云收命令这条链路。给 main.c 调用，收到命令就去改设备。
- *   手机走上网和走蓝牙下发的是同一套 JSON，认命令只有一份：
- *   声明在 app_cmd.h，实现在本文件，ble_app.c 也调这两个函数。
- *   往上收：命令、阈值、查询。往下调：device_model 改设备、automation 改联动、
- *   sensor 取测量、wifi_sta 看网络。回执和状态统一交给 app_link 广播，
- *   上网和蓝牙两条链路各拿一份，谁也不漏。
- *
- * 功能：
- *   连上服务器收命令
- *   认回显，防死循环
- *   解析命令
- *   收阈值改联动
- *   报状态和测量
- *   回执行结果
- */
 #include "mqtt_app.h"
 
 #include <stdio.h>
@@ -41,25 +24,27 @@
 
 static const char *TAG = "mqtt_app";
 
-/* 功能：放主题名 */
+// 放主题名
 #define TOPIC_BUF_LEN    128
-/* 功能：放状态快照 */
+// 放状态快照
 #define SNAP_BUF_LEN     1024
-/* 功能：放收到的命令 */
+// 放收到的命令
 #define RX_BUF_LEN       256
-/* 功能：放客户端名 */
+// 放客户端名
 #define CLIENT_ID_LEN    48
 
 #define DEV_NAME_MAX     32
 #define ACTION_MAX       24
 
 static esp_mqtt_client_handle_t s_client    = NULL;
-static volatile bool            s_connected = false;   /* 功能：连着才置真 */
-static bool                     s_started   = false;   /* 功能：防重复启动 */
+// 连着才置真
+static volatile bool            s_connected = false;
+// 防重复启动
+static bool                     s_started   = false;
 
 static char s_client_id[CLIENT_ID_LEN] = { 0 };
 
-/* 功能：开机拼一次主题 */
+// 开机拼一次主题
 static char s_topic_state[TOPIC_BUF_LEN]        = { 0 };
 static char s_topic_sensor[TOPIC_BUF_LEN]       = { 0 };
 static char s_topic_availability[TOPIC_BUF_LEN] = { 0 };
@@ -69,11 +54,11 @@ static char s_topic_cmd[TOPIC_BUF_LEN]          = { 0 };
 static char s_topic_cmd_wild[TOPIC_BUF_LEN]     = { 0 };
 static char s_topic_config[TOPIC_BUF_LEN]       = { 0 };
 
-/* 功能：留底认出回显 */
+// 留底认出回显
 static char s_last_pub_config[512] = { 0 };
 static char s_topic_get[TOPIC_BUF_LEN]          = { 0 };
 
-/* 功能：按长度安全拷贝 */
+// 按长度安全拷贝
 static bool copy_bounded(char *dst, size_t dst_size, const char *src, int src_len)
 {
     if (dst == NULL || dst_size == 0 || src == NULL || src_len <= 0) {
@@ -87,7 +72,7 @@ static bool copy_bounded(char *dst, size_t dst_size, const char *src, int src_le
     return true;
 }
 
-/* 功能：看主题尾巴对不对 */
+// 看主题尾巴对不对
 static bool topic_endswith(const char *topic, int topic_len, const char *suffix)
 {
     size_t sl;
@@ -102,7 +87,7 @@ static bool topic_endswith(const char *topic, int topic_len, const char *suffix)
     return memcmp(topic + topic_len - sl, suffix, sl) == 0;
 }
 
-/* 功能：认出命令主题 */
+// 认出命令主题
 static bool topic_is_cmd(const char *topic, int topic_len)
 {
     size_t cl;
@@ -120,7 +105,7 @@ static bool topic_is_cmd(const char *topic, int topic_len)
     return ((size_t)topic_len == cl) || (topic[cl] == '/');
 }
 
-/* 功能：解析命令 */
+// 解析命令
 void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src)
 {
     char json[RX_BUF_LEN];
@@ -131,8 +116,10 @@ void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src
     const cJSON *jvalue  = NULL;
     cJSON *root;
     esp_err_t err = ESP_OK;
-    int value = 100;                /* 功能：默认亮度 */
-    int r = 255, g = 255, b = 255;  /* 功能：默认白色 */
+    // 默认亮度
+    int value = 100;
+    // 默认白色
+    int r = 255, g = 255, b = 255;
     device_id_t id;
 
     if (!copy_bounded(json, sizeof(json), payload, payload_len)) {
@@ -160,7 +147,7 @@ void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src
         return;
     }
 
-    /* 功能：先拷走动作名 */
+    // 先拷走动作名
     snprintf(action, sizeof(action), "%s", jaction->valuestring);
 
     if (jdev != NULL && cJSON_IsString(jdev) && jdev->valuestring != NULL) {
@@ -173,7 +160,7 @@ void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src
         snprintf(dev, sizeof(dev), "%s", jdev->valuestring);
     }
 
-    /* 功能：切自动模式总开关 */
+    // 切自动模式总开关
     if (strcmp(action, MQTT_ACTION_AUTO) == 0) {
         bool on = true;
 
@@ -200,13 +187,13 @@ void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src
         return;
     }
 
-    /* 功能：先单独认 all */
+    // 先单独认 all
     if (strcmp(dev, "all") == 0) {
         if (strcmp(action, MQTT_ACTION_OFF) == 0) {
             err = device_all_off(src);
         } else if (strcmp(action, MQTT_ACTION_ON) == 0) {
-            /* 功能：全开只开灯和风扇 */
-            /* 功能：门窗不动，怕出事 */
+            // 全开只开灯和风扇
+            // 门窗不动，怕出事
             for (int i = (int)DEV_LED_LIVING; i <= (int)DEV_FAN; i++) {
                 esp_err_t e = device_set_power((device_id_t)i, true, src);
                 if (e != ESP_OK && err == ESP_OK) {
@@ -236,7 +223,7 @@ void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src
         return;
     }
 
-    /* 功能：取出数值参数 */
+    // 取出数值参数
     if (jvalue != NULL) {
         if (cJSON_IsNumber(jvalue)) {
             value = (int)jvalue->valuedouble;
@@ -263,7 +250,7 @@ void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src
     }
     cJSON_Delete(root);
 
-    /* 功能：把数夹在范围内 */
+    // 把数夹在范围内
     if (value < 0) {
         value = 0;
     } else if (value > 100) {
@@ -276,7 +263,7 @@ void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src
     if (b < 0)   { b = 0; }
     if (b > 255) { b = 255; }
 
-    /* 功能：按动作去执行 */
+    // 按动作去执行
     if (strcmp(action, MQTT_ACTION_ON) == 0) {
         err = device_set_power(id, true, src);
     } else if (strcmp(action, MQTT_ACTION_OFF) == 0) {
@@ -286,9 +273,11 @@ void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src
     } else if (strcmp(action, MQTT_ACTION_SET) == 0) {
         err = device_set_level(id, (uint8_t)value, src);
     } else if (strcmp(action, MQTT_ACTION_OPEN) == 0) {
-        err = device_set_level(id, 100, src);      /* 功能：开就是给满值 */
+        // 开就是给满值
+        err = device_set_level(id, 100, src);
     } else if (strcmp(action, MQTT_ACTION_CLOSE) == 0) {
-        err = device_set_level(id, 0, src);        /* 功能：关就是给零 */
+        // 关就是给零
+        err = device_set_level(id, 0, src);
     } else if (strcmp(action, MQTT_ACTION_COLOR) == 0) {
         err = device_set_color(id, (uint8_t)r, (uint8_t)g, (uint8_t)b, src);
     } else {
@@ -301,7 +290,7 @@ void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src
         ESP_LOGI(TAG, "cmd ok: dev=%s action=%s value=%d rgb=%d,%d,%d",
                  dev, action, value, r, g, b);
         mqtt_publish_ack(action, true, dev);
-        /* 功能：再报一次兜底 */
+        // 再报一次兜底
         mqtt_publish_state();
     } else {
         ESP_LOGE(TAG, "cmd failed: dev=%s action=%s (%s)", dev, action, esp_err_to_name(err));
@@ -309,7 +298,7 @@ void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src
     }
 }
 
-/* 功能：解析阈值配置 */
+// 解析阈值配置
 void app_cmd_handle_config_json(const char *payload, int payload_len, ctrl_source_t src)
 {
     char json[RX_BUF_LEN];
@@ -323,8 +312,8 @@ void app_cmd_handle_config_json(const char *payload, int payload_len, ctrl_sourc
         return;
     }
 
-    /* 功能：认出自己发的 */
-    /* 功能：只对上网认回显 */
+    // 认出自己发的
+    // 只对上网认回显
     if (src == SRC_MQTT && s_last_pub_config[0] != '\0' &&
         strcmp(json, s_last_pub_config) == 0) {
         ESP_LOGD(TAG, "config: ignore echo of our own published config");
@@ -338,7 +327,7 @@ void app_cmd_handle_config_json(const char *payload, int payload_len, ctrl_sourc
         return;
     }
 
-    /* 功能：逐项交给联动去改 */
+    // 逐项交给联动去改
     cJSON_ArrayForEach(item, root) {
         esp_err_t err;
         float v;
@@ -374,7 +363,7 @@ void app_cmd_handle_config_json(const char *payload, int payload_len, ctrl_sourc
     ESP_LOGI(TAG, "config done: %d applied, %d rejected", applied, rejected);
 }
 
-/* 功能：看主题分给谁处理 */
+// 看主题分给谁处理
 static void handle_message(const char *topic, int topic_len, const char *data, int data_len)
 {
     if (topic == NULL || topic_len <= 0) {
@@ -400,10 +389,10 @@ static void handle_message(const char *topic, int topic_len, const char *data, i
     ESP_LOGW(TAG, "unhandled topic: %.*s", topic_len, topic);
 }
 
-/* 功能：上报一遍设备状态 */
+// 上报一遍设备状态
 esp_err_t mqtt_publish_state(void)
 {
-    /* 功能：改用堆，省栈防崩 */
+    // 改用堆，省栈防崩
     char *snap = (char *)malloc(SNAP_BUF_LEN);
     char ip[16] = "0.0.0.0";
     cJSON *root;
@@ -417,21 +406,23 @@ esp_err_t mqtt_publish_state(void)
 
     n = device_snapshot_json(snap, SNAP_BUF_LEN);
     if (n <= 0 || n >= (int)SNAP_BUF_LEN) {
-        /* 功能：装不下就安全退出 */
+        // 装不下就安全退出
         ESP_LOGE(TAG, "device_snapshot_json failed (ret=%d, buf=%u)", n, (unsigned)SNAP_BUF_LEN);
         free(snap);
         return ESP_ERR_INVALID_SIZE;
     }
-    snap[n] = '\0';   /* 功能：末尾补个结尾符 */
+    // 末尾补个结尾符
+    snap[n] = '\0';
 
-    /* 功能：再补上网络等信息 */
+    // 再补上网络等信息
     root = cJSON_Parse(snap);
     if (root == NULL) {
         ESP_LOGE(TAG, "state snapshot is not valid json");
         free(snap);
         return ESP_ERR_INVALID_ARG;
     }
-    free(snap);   /* 功能：解析完就能释放 */
+    // 解析完就能释放
+    free(snap);
 
     (void)wifi_get_ip_str(ip, sizeof(ip));
     cJSON_AddBoolToObject(root, "auto", automation_is_enabled());
@@ -440,28 +431,31 @@ esp_err_t mqtt_publish_state(void)
     cJSON_AddNumberToObject(root, "uptime", (double)(esp_timer_get_time() / 1000000));
 
     json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);           /* 功能：解析出来的要删 */
+    // 解析出来的要删
+    cJSON_Delete(root);
     if (json == NULL) {
         ESP_LOGE(TAG, "cJSON_PrintUnformatted failed (no mem)");
         return ESP_ERR_NO_MEM;
     }
 
-    /* 功能：两条链路都发一份 */
+    // 两条链路都发一份
     app_link_broadcast(APP_MSG_STATE, json, strlen(json));
     ESP_LOGD(TAG, "state published: %s", json);
-    cJSON_free(json);             /* 功能：日志打完再释放 */
+    // 日志打完再释放
+    cJSON_free(json);
 
     return ESP_OK;
 }
 
-/* 功能：上报一遍测量数据 */
+// 上报一遍测量数据
 esp_err_t mqtt_publish_sensor(const sensor_data_t *d)
 {
     cJSON *root;
     char *json;
 
     if (d == NULL) {
-        d = sensor_get_last();     /* 功能：没给就取最新 */
+        // 没给就取最新
+        d = sensor_get_last();
     }
     if (d == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -472,7 +466,7 @@ esp_err_t mqtt_publish_sensor(const sensor_data_t *d)
         return ESP_ERR_NO_MEM;
     }
 
-    /* 功能：字段名两边对齐 */
+    // 字段名两边对齐
     cJSON_AddNumberToObject(root, "temp", (double)d->temperature);
     cJSON_AddNumberToObject(root, "humi", (double)d->humidity);
     cJSON_AddBoolToObject(root, "temp_valid", d->valid_temp);
@@ -488,14 +482,14 @@ esp_err_t mqtt_publish_sensor(const sensor_data_t *d)
         return ESP_ERR_NO_MEM;
     }
 
-    /* 功能：两条链路都发一份 */
+    // 两条链路都发一份
     app_link_broadcast(APP_MSG_SENSOR, json, strlen(json));
     cJSON_free(json);
 
     return ESP_OK;
 }
 
-/* 功能：上报一遍阈值设置 */
+// 上报一遍阈值设置
 esp_err_t mqtt_publish_config(void)
 {
     char buf[512];
@@ -506,9 +500,10 @@ esp_err_t mqtt_publish_config(void)
         ESP_LOGE(TAG, "automation_cfg_json failed (ret=%d, buf=%u)", n, (unsigned)sizeof(buf));
         return ESP_ERR_INVALID_SIZE;
     }
-    buf[n] = '\0';   /* 功能：末尾补个结尾符 */
+    // 末尾补个结尾符
+    buf[n] = '\0';
 
-    /* 功能：留底好认回显 */
+    // 留底好认回显
     strncpy(s_last_pub_config, buf, sizeof(s_last_pub_config) - 1);
     s_last_pub_config[sizeof(s_last_pub_config) - 1] = '\0';
 
@@ -517,7 +512,7 @@ esp_err_t mqtt_publish_config(void)
     return ESP_OK;
 }
 
-/* 功能：回一条执行结果 */
+// 回一条执行结果
 esp_err_t mqtt_publish_ack(const char *what, bool ok, const char *detail)
 {
     cJSON *root;
@@ -544,7 +539,7 @@ esp_err_t mqtt_publish_ack(const char *what, bool ok, const char *detail)
     return ESP_OK;
 }
 
-/* 功能：报一次本地事件 */
+// 报一次本地事件
 esp_err_t mqtt_publish_event(const char *what)
 {
     cJSON *root;
@@ -563,19 +558,19 @@ esp_err_t mqtt_publish_event(const char *what)
         return ESP_ERR_NO_MEM;
     }
 
-    /* 功能：事件不能丢 */
+    // 事件不能丢
     app_link_broadcast(APP_MSG_EVENT, json, strlen(json));
     cJSON_free(json);
     return ESP_OK;
 }
 
-/* 功能：看这条链路通不通 */
+// 看这条链路通不通
 static bool mqtt_link_is_connected(void)
 {
     return s_connected;
 }
 
-/* 功能：按类型挑主题发 */
+// 按类型挑主题发
 static esp_err_t mqtt_link_send(app_msg_type_t type, const char *json, size_t len)
 {
     const char *topic  = NULL;
@@ -597,7 +592,8 @@ static esp_err_t mqtt_link_send(app_msg_type_t type, const char *json, size_t le
     }
 
     if (topic[0] == '\0') {
-        return ESP_ERR_INVALID_STATE;   /* 功能：主题还没拼好 */
+        // 主题还没拼好
+        return ESP_ERR_INVALID_STATE;
     }
 
     const int msg_id = esp_mqtt_client_publish(s_client, topic, json, (int)len, qos, retain);
@@ -614,32 +610,32 @@ static const app_link_t s_mqtt_link = {
     .is_connected = mqtt_link_is_connected,
 };
 
-/* 功能：看现在连上没有 */
+// 看现在连上没有
 bool mqtt_is_connected(void)
 {
     return s_connected;
 }
 
-/* 功能：设备一变就上报 */
+// 设备一变就上报
 static void device_changed_cb(device_id_t id, ctrl_source_t src, void *user_data)
 {
     (void)user_data;
 
-    /* 功能：几个任务都会调 */
-    /* 功能：没连上就悄悄跳过 */
+    // 几个任务都会调
+    // 没连上就悄悄跳过
     ESP_LOGD(TAG, "device changed: %s (by %s) -> publish state",
              device_id_name(id), ctrl_source_name(src));
     (void)mqtt_publish_state();
 }
 
-/* 功能：挂上状态变化回调 */
+// 挂上状态变化回调
 esp_err_t mqtt_app_bind_device_events(void)
 {
-    /* 功能：这个位置只留一个 */
+    // 这个位置只留一个
     return device_register_cb(device_changed_cb, NULL);
 }
 
-/* 功能：管连接和收数据 */
+// 管连接和收数据
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                                int32_t event_id, void *event_data)
 {
@@ -659,15 +655,15 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         s_connected = true;
         led_status_set(LED_STATUS_MQTT_OK);
 
-        /* 功能：订下三条下行 */
+        // 订下三条下行
         esp_mqtt_client_subscribe(client, s_topic_cmd_wild, 1);
         esp_mqtt_client_subscribe(client, s_topic_config, 1);
         esp_mqtt_client_subscribe(client, s_topic_get, 1);
 
-        /* 功能：报一声我在线 */
+        // 报一声我在线
         esp_mqtt_client_publish(client, s_topic_availability, MQTT_PAYLOAD_ONLINE, 0, 1, 1);
 
-        /* 功能：连上先报一遍 */
+        // 连上先报一遍
         mqtt_publish_state();
         mqtt_publish_sensor(sensor_get_last());
         break;
@@ -679,9 +675,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         break;
 
     case MQTT_EVENT_DATA:
-        /* 功能：按长度收数据 */
+        // 按长度收数据
         if (event->current_data_offset != 0) {
-            /* 功能：拆成几片的先不管 */
+            // 拆成几片的先不管
             ESP_LOGW(TAG, "ignore fragmented payload (offset=%d, total=%d)",
                      event->current_data_offset, event->total_data_len);
             break;
@@ -709,7 +705,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     }
 }
 
-/* 功能：拼主题，错了就返回 */
+// 拼主题，错了就返回
 #define BUILD_TOPIC(dst, func)                                                    \
     do {                                                                          \
         esp_err_t e_ = func((dst), sizeof(dst));                                   \
@@ -719,7 +715,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         }                                                                          \
     } while (0)
 
-/* 功能：起服务，可重复调 */
+// 起服务，可重复调
 esp_err_t mqtt_app_start(void)
 {
     esp_mqtt_client_config_t cfg = { 0 };
@@ -731,7 +727,7 @@ esp_err_t mqtt_app_start(void)
         return ESP_OK;
     }
 
-    /* 功能：拼出各条主题 */
+    // 拼出各条主题
     BUILD_TOPIC(s_topic_state,        mqtt_topic_state);
     BUILD_TOPIC(s_topic_sensor,       mqtt_topic_sensor);
     BUILD_TOPIC(s_topic_availability, mqtt_topic_availability);
@@ -742,7 +738,7 @@ esp_err_t mqtt_app_start(void)
     BUILD_TOPIC(s_topic_config,       mqtt_topic_config);
     BUILD_TOPIC(s_topic_get,          mqtt_topic_get);
 
-    /* 功能：客户端名必须唯一 */
+    // 客户端名必须唯一
     if (CONFIG_APP_MQTT_UID_OVERRIDE[0] != '\0') {
         snprintf(uid, sizeof(uid), "%s", CONFIG_APP_MQTT_UID_OVERRIDE);
     } else if (wifi_get_mac_suffix(uid, sizeof(uid)) != ESP_OK) {
@@ -751,7 +747,7 @@ esp_err_t mqtt_app_start(void)
     }
     snprintf(s_client_id, sizeof(s_client_id), "esp32sh-%s", uid);
 
-    /* 功能：填好连接参数 */
+    // 填好连接参数
     cfg.broker.address.uri            = CONFIG_APP_MQTT_BROKER_URI;
     cfg.credentials.client_id         = s_client_id;
     cfg.session.keepalive             = CONFIG_APP_MQTT_KEEPALIVE_S;
@@ -759,11 +755,14 @@ esp_err_t mqtt_app_start(void)
     cfg.session.last_will.msg         = MQTT_PAYLOAD_OFFLINE;
     cfg.session.last_will.msg_len     = (int)strlen(MQTT_PAYLOAD_OFFLINE);
     cfg.session.last_will.qos         = 1;
-    cfg.session.last_will.retain      = 1;      /* 功能：这个字段是整数 */
-    cfg.network.reconnect_timeout_ms  = 5000;   /* 功能：断了等五秒再连 */
-    cfg.buffer.size                   = 2048;   /* 功能：给状态留够地方 */
+    // 这个字段是整数
+    cfg.session.last_will.retain      = 1;
+    // 断了等五秒再连
+    cfg.network.reconnect_timeout_ms  = 5000;
+    // 给状态留够地方
+    cfg.buffer.size                   = 2048;
 
-    /* 功能：没账号就不填 */
+    // 没账号就不填
     if (CONFIG_APP_MQTT_USERNAME[0] != '\0') {
         cfg.credentials.username = CONFIG_APP_MQTT_USERNAME;
     }
@@ -771,7 +770,7 @@ esp_err_t mqtt_app_start(void)
         cfg.credentials.authentication.password = CONFIG_APP_MQTT_PASSWORD;
     }
 
-    /* 功能：建好并启动客户端 */
+    // 建好并启动客户端
     s_client = esp_mqtt_client_init(&cfg);
     if (s_client == NULL) {
         ESP_LOGE(TAG, "esp_mqtt_client_init failed");
@@ -786,8 +785,8 @@ esp_err_t mqtt_app_start(void)
         return err;
     }
 
-    /* 功能：登记成上行链路 */
-    /* 功能：没登记就发不出去 */
+    // 登记成上行链路
+    // 没登记就发不出去
     err = app_link_register(&s_mqtt_link);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "app_link_register(mqtt) failed: %s", esp_err_to_name(err));

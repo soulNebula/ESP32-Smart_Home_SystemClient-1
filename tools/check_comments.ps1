@@ -1,17 +1,4 @@
-﻿# 模块：
-#   编译前的注释检查工具。专门查"注释写法把代码结构搞坏"的毛病，
-#   本项目因为这三种写法编译失败过三次：注释里出现结束符号、
-#   注释里又嵌一个注释开头、注释某行以反斜杠收尾。
-#   它只读文本，把每个 C、C++ 文件扫一遍并报出行号，编译前先跑它。
-#   参数名不敢叫 Path：叫 Path 时相对路径会绑成空，换成别的名字就没事。
-#   扫描时不在注释里却碰到结束符号，说明前面的注释提前关了，后面的话就成了
-#   代码，报错还报在老远的地方。
-#
-# 功能：
-#   扫描源文件
-#   查三类注释毛病
-#   查有没有注释没关
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Path = '',
     [string[]]$Ext = @('.c', '.h', '.cpp', '.hpp')
@@ -19,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# 功能：参数名别叫 Path
+# 参数名别叫 Path
 $ScanRoot = $Path
 if (-not $ScanRoot) { $ScanRoot = (Get-Item (Split-Path -Parent $PSScriptRoot)).FullName }
 $resolved = Resolve-Path -LiteralPath $ScanRoot -ErrorAction SilentlyContinue
@@ -34,11 +21,16 @@ $LF   = [char]10
 $CR   = [char]13
 $TAB  = [char]9
 $NUL  = [char]0
-$BS   = [char]92   # 功能：反斜杠
-$SLASH = [char]47  # 功能：斜杠
-$STAR  = [char]42  # 功能：星号
-$DQ   = [char]34   # 功能：双引号
-$SQ   = [char]39   # 功能：单引号
+# 反斜杠
+$BS   = [char]92
+# 斜杠
+$SLASH = [char]47
+# 星号
+$STAR  = [char]42
+# 双引号
+$DQ   = [char]34
+# 单引号
+$SQ   = [char]39
 
 Write-Host ""
 Write-Host "=== C/C++ comment structure check ===" -ForegroundColor Cyan
@@ -85,7 +77,7 @@ foreach ($f in $files) {
         }
 
         if ($c -eq $SLASH -and $n -eq $STAR) { $inBlock = $true; $i += 2; continue }
-# 功能：查注释结束在哪儿
+# 查注释结束在哪儿
         if ($c -eq $STAR -and $n -eq $SLASH) {
             $issues.Add(("{0}:{1}  comment-END token OUTSIDE a comment -> a block comment was closed early" -f $f.FullName, $line))
             $i += 2; continue

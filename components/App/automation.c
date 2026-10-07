@@ -1,46 +1,11 @@
-/*
- * 模块：
- *   自动联动。人不动手时它自己看着办：隔一会儿收一次传感器的数，
- *   觉得该动就去调设备总状态表（device_model.c）—— 全屋唯一的真相来源，
- *   由它统一改状态、动硬件、通知界面和手机。
- *   被 main.c 的主循环定期喊一次；自己读 sensor.c 的光照、温度、雨滴。
- *   几条线（阈值）能由手机经 MQTT 改，改完存在 flash 里，不用重烧固件。
- *
- *   三条规则：
- *     一、光照。屋里暗过下面那条线，就开客厅灯，同时把窗帘拉上；
- *         屋里亮过上面那条线，就关客厅灯，同时把窗帘拉开。
- *         灯和窗帘的动作正好相反 —— 暗了人想开灯，但窗帘得拉上挡外面；
- *         亮了人想关灯，窗帘就拉开透光。
- *     二、温度。热过上面那条线就开风扇（按设定转速），凉过下面那条线才关。
- *     三、雨滴。湿度超过那条线就当在下雨，先把窗户关上；雨停之后要不要
- *         自动开窗，看 auto_window_reopen，默认不开，怕雨又来了。
- *
- *   两处讲究：
- *     一是开和关各用一条线，两条线中间那段谁也别动 —— 数值在线上来回抖时
- *     不会一会儿开一会儿关，灯不闪、风扇不响、窗帘舵机也不来回转。
- *     二是人优先。哪个设备刚被人用手机、语音或按键动过，一分钟之内
- *     这三条规则都不许碰它，免得刚开的灯又被自己的规则关掉。
- *
- *   自己心里有本账：几条线用一把锁护着（手机随时可能来改），改完还存回
- *   存东西的地方；每次只从锁里抄一份出来看，绝不长时间攥着锁，
- *   也不在主循环里干等着硬件的慢活。
- *
- * 功能：
- *   隔会儿看一眼屋里
- *   暗了开灯，亮了关灯
- *   窗帘跟灯反着来
- *   热了开风扇，凉了关
- *   下雨就把窗关上
- *   人刚动过就先让着人
- *   几条线改完存起来
- */
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
 
-#include "sdkconfig.h"      /* 功能：看自动模式的出厂默认 */
+// 看自动模式的出厂默认
+#include "sdkconfig.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -63,51 +28,55 @@ static const char *TAG = "automation";
 #define AUTO_NVS_NAMESPACE  "sh_auto"
 #define AUTO_NVS_KEY        "cfg"
 
-/* 功能：四个字母拼成记号 */
+// 四个字母拼成记号
 #define AUTO_CFG_MAGIC      ((uint32_t)('A') | ((uint32_t)('U') << 8) | \
                              ((uint32_t)('T') << 16) | ((uint32_t)('O') << 24))
 #define AUTO_CFG_VERSION    1
 
-/* 功能：存到 flash 里的整包 */
+// 存到 flash 里的整包
 typedef struct {
-    uint32_t magic;            /* 功能：记号，认是不是自己的 */
-    uint16_t version;          /* 功能：第几版，好认旧数据 */
-    uint16_t cfg_size;         /* 功能：配置多大，对一下 */
-    automation_cfg_t cfg;      /* 功能：真正那几条线 */
+    // 记号，认是不是自己的
+    uint32_t magic;
+    // 第几版，好认旧数据
+    uint16_t version;
+    // 配置多大，对一下
+    uint16_t cfg_size;
+    // 真正那几条线
+    automation_cfg_t cfg;
 } auto_cfg_blob_t;
 
-/* 功能：头固定八字节 */
+// 头固定八字节
 _Static_assert(offsetof(auto_cfg_blob_t, cfg) == 8,
                "auto_cfg_blob_t header must stay exactly 8 bytes");
-/* 功能：配置别太大，装得下 */
+// 配置别太大，装得下
 _Static_assert(sizeof(automation_cfg_t) < 65535, "automation_cfg_t too large for the blob header");
 
-/* 功能：出厂默认开不开自动 */
+// 出厂默认开不开自动
 #ifdef CONFIG_APP_AUTO_ENABLE_DEFAULT
 #define AUTO_DEF_ENABLED    true
 #else
 #define AUTO_DEF_ENABLED    false
 #endif
 
-/* 功能：一次写好默认那几条线 */
+// 一次写好默认那几条线
 #define AUTO_CFG_DEFAULT_INIT {                    \
     .enabled            = AUTO_DEF_ENABLED,        \
-    .light_on_lux       = (float)BSP_DEF_LIGHT_ON_LUX,   /* 功能：默认五十 */   \
-    .light_off_lux      = (float)BSP_DEF_LIGHT_OFF_LUX,  /* 功能：默认两百 */  \
-    .temp_fan_on_c      = (float)BSP_DEF_TEMP_FAN_ON_C,  /* 功能：默认二十八 */   \
-    .temp_fan_off_c     = (float)BSP_DEF_TEMP_FAN_OFF_C, /* 功能：默认二十六 */   \
+    .light_on_lux       = (float)BSP_DEF_LIGHT_ON_LUX,   /* 默认五十 */   \
+    .light_off_lux      = (float)BSP_DEF_LIGHT_OFF_LUX,  /* 默认两百 */  \
+    .temp_fan_on_c      = (float)BSP_DEF_TEMP_FAN_ON_C,  /* 默认二十八 */   \
+    .temp_fan_off_c     = (float)BSP_DEF_TEMP_FAN_OFF_C, /* 默认二十六 */   \
     .fan_auto_speed     = 70,                      \
-    .rain_pct           = (float)BSP_DEF_RAIN_PCT, /* 功能：默认三十 */   \
-    .auto_window_reopen = false,                   /* 功能：雨停先不开窗 */ \
+    .rain_pct           = (float)BSP_DEF_RAIN_PCT, /* 默认三十 */   \
+    .auto_window_reopen = false,                   /* 雨停先不开窗 */ \
     .auto_light_enable  = true,                    \
     .auto_temp_enable   = true,                    \
     .auto_rain_enable   = true,                    \
 }
 
-/* 功能：眼下用的那几条线 */
+// 眼下用的那几条线
 static automation_cfg_t s_cfg = AUTO_CFG_DEFAULT_INIT;
 
-/* 功能：记下每台人动过的时间 */
+// 记下每台人动过的时间
 static int64_t s_last_manual_ms[DEV_COUNT];
 
 static SemaphoreHandle_t s_lock  = NULL;
@@ -139,7 +108,7 @@ static void cfg_store(const automation_cfg_t *c)
     auto_unlock();
 }
 
-/* 功能：锁里抄一份配置出来 */
+// 锁里抄一份配置出来
 static void cfg_snapshot(automation_cfg_t *out)
 {
     auto_lock();
@@ -147,7 +116,7 @@ static void cfg_snapshot(automation_cfg_t *out)
     auto_unlock();
 }
 
-/* 功能：查查这几条线合不合理 */
+// 查查这几条线合不合理
 static bool cfg_validate(const automation_cfg_t *c)
 {
     if (!isfinite(c->light_on_lux) || !isfinite(c->light_off_lux) ||
@@ -156,16 +125,19 @@ static bool cfg_validate(const automation_cfg_t *c)
         return false;
     }
     if (c->light_on_lux <= 0.0f) {
-        return false;                                   /* 功能：开灯线得是正数 */
+        // 开灯线得是正数
+        return false;
     }
     if (c->light_off_lux <= c->light_on_lux) {
-        return false;                                   /* 功能：两条线高低写反了 */
+        // 两条线高低写反了
+        return false;
     }
     if ((c->temp_fan_on_c < -10.0f) || (c->temp_fan_on_c > 60.0f)) {
         return false;
     }
     if (c->temp_fan_off_c >= c->temp_fan_on_c) {
-        return false;                                   /* 功能：关风扇的线得低些 */
+        // 关风扇的线得低些
+        return false;
     }
     if ((c->rain_pct < 0.0f) || (c->rain_pct > 100.0f)) {
         return false;
@@ -190,7 +162,7 @@ esp_err_t automation_init(void)
         }
     }
 
-    /* 功能：存东西的地方先备好 */
+    // 存东西的地方先备好
     esp_err_t err = nvs_flash_init();
     if ((err == ESP_ERR_NVS_NO_FREE_PAGES) || (err == ESP_ERR_NVS_NEW_VERSION_FOUND)) {
         ESP_LOGW(TAG, "nvs_flash_init: %s -> erase & retry", esp_err_to_name(err));
@@ -203,20 +175,20 @@ esp_err_t automation_init(void)
                  esp_err_to_name(err));
     }
 
-    /* 功能：读不到就用默认值 */
+    // 读不到就用默认值
     err = automation_load();
     s_inited = true;
 
     ESP_LOGI(TAG, "automation init done (%s)",
              (err == ESP_OK) ? "cfg loaded from NVS" : "using default cfg");
 
-    /* 功能：留够地方拼 JSON */
+    // 留够地方拼 JSON
     char buf[320];
     if (automation_cfg_json(buf, sizeof(buf)) > 0) {
         ESP_LOGI(TAG, "cfg = %s", buf);
     }
 
-    /* 功能：配置坏了也别起不来 */
+    // 配置坏了也别起不来
     return ESP_OK;
 }
 
@@ -228,7 +200,7 @@ esp_err_t automation_load(void)
     nvs_handle_t handle = 0;
     esp_err_t err = nvs_open(AUTO_NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
-        /* 功能：头回上电没存过，正常 */
+        // 头回上电没存过，正常
         ESP_LOGI(TAG, "nvs_open(%s) -> %s, use defaults",
                  AUTO_NVS_NAMESPACE, esp_err_to_name(err));
         cfg_store(&loaded);
@@ -291,7 +263,8 @@ esp_err_t automation_save(void)
 
     err = nvs_set_blob(handle, AUTO_NVS_KEY, &blob, sizeof(blob));
     if (err == ESP_OK) {
-        err = nvs_commit(handle);       /* 功能：不落盘掉电就丢 */
+        // 不落盘掉电就丢
+        err = nvs_commit(handle);
     }
     nvs_close(handle);
 
@@ -325,7 +298,7 @@ bool automation_is_enabled(void)
     return en;
 }
 
-/* 功能：给的是里头地址，改完存 */
+// 给的是里头地址，改完存
 automation_cfg_t *automation_get_cfg(void)
 {
     return &s_cfg;
@@ -341,7 +314,7 @@ esp_err_t automation_set_threshold(const char *key, float value)
     bool      log_bool = false;
     bool      bool_val = false;
 
-    /* 功能：不像数的值直接挡掉 */
+    // 不像数的值直接挡掉
     if (!isfinite(value)) {
         ESP_LOGW(TAG, "cfg.%s: non-finite value rejected", key);
         return ESP_ERR_INVALID_SIZE;
@@ -354,28 +327,28 @@ esp_err_t automation_set_threshold(const char *key, float value)
         log_bool = true;
         bool_val = s_cfg.enabled;
     } else if (strcmp(key, "light_on_lux") == 0) {
-        /* 功能：开灯线必须比关灯线低 */
+        // 开灯线必须比关灯线低
         if (value <= 0.0f || value >= s_cfg.light_off_lux) {
             err = ESP_ERR_INVALID_SIZE;
         } else {
             s_cfg.light_on_lux = value;
         }
     } else if (strcmp(key, "light_off_lux") == 0) {
-        /* 功能：两条线中间那段先不动 */
+        // 两条线中间那段先不动
         if (value <= s_cfg.light_on_lux) {
             err = ESP_ERR_INVALID_SIZE;
         } else {
             s_cfg.light_off_lux = value;
         }
     } else if (strcmp(key, "temp_fan_on_c") == 0) {
-        /* 功能：开风扇线必须比关的高 */
+        // 开风扇线必须比关的高
         if ((value < -10.0f) || (value > 60.0f) || value <= s_cfg.temp_fan_off_c) {
             err = ESP_ERR_INVALID_SIZE;
         } else {
             s_cfg.temp_fan_on_c = value;
         }
     } else if (strcmp(key, "temp_fan_off_c") == 0) {
-        /* 功能：关风扇线得低一些 */
+        // 关风扇线得低一些
         if (value >= s_cfg.temp_fan_on_c) {
             err = ESP_ERR_INVALID_SIZE;
         } else {
@@ -391,7 +364,8 @@ esp_err_t automation_set_threshold(const char *key, float value)
         if ((value < 0.0f) || (value > 100.0f)) {
             err = ESP_ERR_INVALID_SIZE;
         } else {
-            s_cfg.fan_auto_speed = (uint8_t)(value + 0.5f);     /* 功能：四舍五入成整数 */
+            // 四舍五入成整数
+            s_cfg.fan_auto_speed = (uint8_t)(value + 0.5f);
         }
     } else if (strcmp(key, "auto_light_enable") == 0) {
         s_cfg.auto_light_enable = (value != 0.0f);
@@ -410,12 +384,13 @@ esp_err_t automation_set_threshold(const char *key, float value)
         log_bool = true;
         bool_val = s_cfg.auto_window_reopen;
     } else {
-        err = ESP_ERR_INVALID_ARG;      /* 功能：这个名字不认识 */
+        // 这个名字不认识
+        err = ESP_ERR_INVALID_ARG;
     }
 
     auto_unlock();
 
-    /* 功能：出了锁再打日志 */
+    // 出了锁再打日志
     if (err == ESP_OK) {
         if (log_bool) {
             ESP_LOGI(TAG, "cfg.%s = %s", key, bool_val ? "true" : "false");
@@ -426,11 +401,11 @@ esp_err_t automation_set_threshold(const char *key, float value)
         ESP_LOGW(TAG, "cfg.%s = %.2f rejected: %s", key, (double)value, esp_err_to_name(err));
     }
 
-    /* 功能：这儿先不存，等外面喊存 */
+    // 这儿先不存，等外面喊存
     return err;
 }
 
-/* 功能：拿一份配置拼成 JSON */
+// 拿一份配置拼成 JSON
 static int cfg_json_build(const automation_cfg_t *c, char *buf, size_t len)
 {
     if ((c == NULL) || (buf == NULL) || (len == 0)) {
@@ -488,7 +463,7 @@ void automation_notify_manual(device_id_t id)
 
     auto_lock();
     if (id == DEV_COUNT) {
-        /* 功能：表尾这个值代表全部 */
+        // 表尾这个值代表全部
         for (int i = 0; i < DEV_COUNT; i++) {
             s_last_manual_ms[i] = now_ms;
         }
@@ -501,7 +476,7 @@ void automation_notify_manual(device_id_t id)
              (id == DEV_COUNT) ? "all" : device_id_name(id));
 }
 
-/* 功能：看这台现在让不让碰 */
+// 看这台现在让不让碰
 static bool guard_ok(device_id_t id, int64_t now_ms)
 {
     if (((int)id < 0) || (id >= DEV_COUNT)) {
@@ -510,12 +485,13 @@ static bool guard_ok(device_id_t id, int64_t now_ms)
 
     int64_t last = s_last_manual_ms[id];
     if (last == 0) {
-        return true;        /* 功能：没人动过，随便调 */
+        // 没人动过，随便调
+        return true;
     }
     return (now_ms - last) >= (int64_t)AUTO_MANUAL_GUARD_MS;
 }
 
-/* 功能：看光照的数是不是真的 */
+// 看光照的数是不是真的
 static bool light_data_valid(const sensor_data_t *d)
 {
     return d->light_is_bh1750 || (d->light_mv > 0) || (d->light_pct > 0.0f);
@@ -537,9 +513,9 @@ void automation_tick(const sensor_data_t *d)
 
     const int64_t now_ms = esp_timer_get_time() / 1000;
 
-    /* 功能：头一条，看光照暗不暗 */
+    // 头一条，看光照暗不暗
     if (cfg.auto_light_enable && light_data_valid(d)) {
-        /* 功能：客厅那盏灯 */
+        // 客厅那盏灯
         if (!device_get_power(DEV_LED_LIVING) && (d->lux < cfg.light_on_lux)) {
             if (guard_ok(DEV_LED_LIVING, now_ms)) {
                 ESP_LOGI(TAG, "rule1: lux %.1f < on %.1f & living LED off -> LED ON",
@@ -558,7 +534,7 @@ void automation_tick(const sensor_data_t *d)
             }
         }
 
-        /* 功能：窗帘和灯正相反 */
+        // 窗帘和灯正相反
         const uint8_t curtain_pos = device_get_level(DEV_CURTAIN);
         if ((d->lux < cfg.light_on_lux) && (curtain_pos > 0)) {
             if (guard_ok(DEV_CURTAIN, now_ms)) {
@@ -579,7 +555,7 @@ void automation_tick(const sensor_data_t *d)
         }
     }
 
-    /* 功能：热了开风扇，凉了关 */
+    // 热了开风扇，凉了关
     if (cfg.auto_temp_enable && d->valid_temp) {
         if (!device_get_power(DEV_FAN) && (d->temperature > cfg.temp_fan_on_c)) {
             if (guard_ok(DEV_FAN, now_ms)) {
@@ -601,7 +577,7 @@ void automation_tick(const sensor_data_t *d)
         }
     }
 
-    /* 功能：下雨就把窗关上 */
+    // 下雨就把窗关上
     if (cfg.auto_rain_enable) {
         const bool raining     = (d->rain_pct > cfg.rain_pct);
         const bool window_open = device_get_power(DEV_WINDOW);

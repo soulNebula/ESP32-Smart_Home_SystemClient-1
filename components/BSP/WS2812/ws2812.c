@@ -1,127 +1,137 @@
-/*
- * 模块：
- *   WS2812 彩灯驱动。四个房间的灯带和板上那颗小灯都靠它点亮，
- *   被 led.c 调用；灯带走 RMT 硬件发波形，
- *   板上小灯直接用 CPU 翻转引脚。
- *
- * 功能：
- *   建一条灯带
- *   单个像素上色
- *   整条一起上色
- *   把颜色发出去
- *   直接翻转引脚发数据
- */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "freertos/FreeRTOS.h"      /* 功能：开关中断用 */
+// 开关中断用
+#include "freertos/FreeRTOS.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
-#include "esp_attr.h"               /* 功能：标记放内存跑 */
-#include "esp_cpu.h"                /* 功能：读CPU周期数 */
-#include "esp_rom_sys.h"            /* 功能：延时和主频 */
+// 标记放内存跑
+#include "esp_attr.h"
+// 读CPU周期数
+#include "esp_cpu.h"
+// 延时和主频
+#include "esp_rom_sys.h"
 
 #include "driver/gpio.h"
 #include "driver/rmt_tx.h"
 #include "driver/rmt_encoder.h"
 
-#include "hal/gpio_ll.h"            /* 功能：直接写寄存器快 */
-#include "soc/gpio_struct.h"        /* 功能：拿到GPIO寄存器 */
-#include "soc/soc_caps.h"           /* 功能：芯片通道内存数 */
+// 直接写寄存器快
+#include "hal/gpio_ll.h"
+// 拿到GPIO寄存器
+#include "soc/gpio_struct.h"
+// 芯片通道内存数
+#include "soc/soc_caps.h"
 
 #include "ws2812.h"
 #include "board_config.h"
 
 static const char *TAG = "WS2812";
 
-/* 功能：灯带时序，单位纳秒 */
+// 灯带时序，单位纳秒
 #define WS2812_T0H_NS           300
 #define WS2812_T0L_NS           900
 #define WS2812_T1H_NS           900
 #define WS2812_T1L_NS           300
-#define WS2812_RESET_NS         60000       /* 功能：复位要超50微秒 */
+// 复位要超50微秒
+#define WS2812_RESET_NS         60000
 
-/* 功能：复位延时按微秒算 */
+// 复位延时按微秒算
 #define WS2812_BITBANG_RESET_US 60
 
-/* 功能：S3 只有四路 */
+// S3 只有四路
 #define WS2812_MAX_STRIPS       4
 
-/* 功能：发送队列深度 */
+// 发送队列深度
 #define WS2812_TRANS_QUEUE_DEPTH    4
 
-/* 功能：等发完的余量 */
+// 等发完的余量
 #define WS2812_TX_TIMEOUT_MARGIN_MS 100
-/* 功能：每颗灯约30微秒 */
+// 每颗灯约30微秒
 #define WS2812_US_PER_LED           30
 
-/* 功能：算不出主频就兜底 */
-#define WS2812_FALLBACK_TICKS_PER_US    240     /* 功能：S3 跑240兆 */
+// 算不出主频就兜底
+// S3 跑240兆
+#define WS2812_FALLBACK_TICKS_PER_US    240
 
-/* 功能：灯带长这样 */
+// 灯带长这样
 struct ws2812_strip_s {
-    gpio_num_t              gpio;       /* 功能：数据脚 */
-    uint32_t                led_num;    /* 功能：灯珠数量 */
-    uint8_t                *buf;        /* 功能：颜色缓存 */
-    rmt_channel_handle_t    chan;       /* 功能：发送通道 */
-    rmt_encoder_handle_t    encoder;    /* 功能：自己写的编码器 */
+    // 数据脚
+    gpio_num_t              gpio;
+    // 灯珠数量
+    uint32_t                led_num;
+    // 颜色缓存
+    uint8_t                *buf;
+    // 发送通道
+    rmt_channel_handle_t    chan;
+    // 自己写的编码器
+    rmt_encoder_handle_t    encoder;
 };
 
-/* 功能：自己写的编码器 */
+// 自己写的编码器
 typedef struct {
     rmt_encoder_t           base;
-    rmt_encoder_handle_t    bytes_encoder;  /* 功能：字节变波形 */
-    rmt_encoder_handle_t    copy_encoder;   /* 功能：补一段复位码 */
-    int                     state;          /* 功能：0发数据1复位 */
-    rmt_symbol_word_t       reset_code;     /* 功能：复位用的码 */
+    // 字节变波形
+    rmt_encoder_handle_t    bytes_encoder;
+    // 补一段复位码
+    rmt_encoder_handle_t    copy_encoder;
+    // 0发数据1复位
+    int                     state;
+    // 复位用的码
+    rmt_symbol_word_t       reset_code;
 } ws2812_encoder_t;
 
-/* 功能：数已建了几条 */
+// 数已建了几条
 static portMUX_TYPE s_strip_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t     s_strip_cnt = 0;
 
-/* 功能：纳秒换成计数 */
+// 纳秒换成计数
 static uint32_t ws2812_ns_to_ticks(uint32_t ns, uint32_t res_hz)
 {
     uint64_t ticks = ((uint64_t)ns * (uint64_t)res_hz) / 1000000000ULL;
 
     if (ticks == 0) {
-        ticks = 1;              /* 功能：0不合法给1 */
+        // 0不合法给1
+        ticks = 1;
     }
     if (ticks > 0x7FFFULL) {
-        ticks = 0x7FFFULL;      /* 功能：最多15位 */
+        // 最多15位
+        ticks = 0x7FFFULL;
     }
     return (uint32_t)ticks;
 }
 
-/* 功能：夹到只占一块内存 */
+// 夹到只占一块内存
 static size_t ws2812_mem_block_symbols(void)
 {
     size_t block = (size_t)BSP_WS2812_MEM_BLOCK;
     const size_t one_block = (size_t)SOC_RMT_MEM_WORDS_PER_CHANNEL;
 
     if (block < one_block) {
-        block = one_block;      /* 功能：小了非法要补齐 */
+        // 小了非法要补齐
+        block = one_block;
     }
     if ((block & 0x1U) != 0U) {
-        block++;                /* 功能：必须凑成偶数 */
+        // 必须凑成偶数
+        block++;
     }
     if (block > one_block) {
-        block = one_block;      /* 功能：占了就少一路 */
+        // 占了就少一路
+        block = one_block;
     }
     return block;
 }
 
-/* 功能：算等多久算超时 */
+// 算等多久算超时
 static int ws2812_tx_timeout_ms(uint32_t led_num)
 {
     return (int)((led_num * WS2812_US_PER_LED) / 1000U) + WS2812_TX_TIMEOUT_MARGIN_MS;
 }
 
-/* 功能：把颜色编成波形 */
+// 把颜色编成波形
 static size_t ws2812_encoder_encode(rmt_encoder_t *encoder, rmt_channel_handle_t tx_channel,
                                     const void *primary_data, size_t data_size,
                                     rmt_encode_state_t *ret_state)
@@ -134,23 +144,28 @@ static size_t ws2812_encoder_encode(rmt_encoder_t *encoder, rmt_channel_handle_t
     size_t encoded_symbols = 0;
 
     switch (ws_encoder->state) {
-    case 0:     /* 功能：先发颜色 */
+    // 先发颜色
+    case 0:
         encoded_symbols += bytes_encoder->encode(bytes_encoder, tx_channel,
                                                  primary_data, data_size, &session_state);
         if (session_state & RMT_ENCODING_COMPLETE) {
-            ws_encoder->state = 1;      /* 功能：发完换复位码 */
+            // 发完换复位码
+            ws_encoder->state = 1;
         }
         if (session_state & RMT_ENCODING_MEM_FULL) {
             state |= RMT_ENCODING_MEM_FULL;
-            goto out;                   /* 功能：满了先让去发 */
+            // 满了先让去发
+            goto out;
         }
-        /* 功能：故意往下走 */
-    case 1:     /* 功能：再发复位码 */
+        // 故意往下走
+    // 再发复位码
+    case 1:
         encoded_symbols += copy_encoder->encode(copy_encoder, tx_channel,
                                                 &ws_encoder->reset_code,
                                                 sizeof(ws_encoder->reset_code), &session_state);
         if (session_state & RMT_ENCODING_COMPLETE) {
-            ws_encoder->state = RMT_ENCODING_RESET;     /* 功能：发完回到开头 */
+            // 发完回到开头
+            ws_encoder->state = RMT_ENCODING_RESET;
             state |= RMT_ENCODING_COMPLETE;
         }
         if (session_state & RMT_ENCODING_MEM_FULL) {
@@ -167,7 +182,7 @@ out:
     return encoded_symbols;
 }
 
-/* 功能：把占的东西还回去 */
+// 把占的东西还回去
 static esp_err_t ws2812_encoder_del(rmt_encoder_t *encoder)
 {
     ws2812_encoder_t *ws_encoder = __containerof(encoder, ws2812_encoder_t, base);
@@ -182,7 +197,7 @@ static esp_err_t ws2812_encoder_del(rmt_encoder_t *encoder)
     return ESP_OK;
 }
 
-/* 功能：清干净重来 */
+// 清干净重来
 static esp_err_t ws2812_encoder_reset(rmt_encoder_t *encoder)
 {
     ws2812_encoder_t *ws_encoder = __containerof(encoder, ws2812_encoder_t, base);
@@ -197,7 +212,7 @@ static esp_err_t ws2812_encoder_reset(rmt_encoder_t *encoder)
     return ESP_OK;
 }
 
-/* 功能：建一个编码器 */
+// 建一个编码器
 static esp_err_t ws2812_new_encoder(uint32_t res_hz, rmt_encoder_handle_t *ret_encoder)
 {
     if (ret_encoder == NULL || res_hz == 0) {
@@ -216,7 +231,7 @@ static esp_err_t ws2812_new_encoder(uint32_t res_hz, rmt_encoder_handle_t *ret_e
     ws_encoder->base.del    = ws2812_encoder_del;
     ws_encoder->state       = RMT_ENCODING_RESET;
 
-    /* 功能：0和1各自的波形 */
+    // 0和1各自的波形
     const rmt_bytes_encoder_config_t bytes_cfg = {
         .bit0 = {
             .level0 = 1,
@@ -249,7 +264,7 @@ static esp_err_t ws2812_new_encoder(uint32_t res_hz, rmt_encoder_handle_t *ret_e
         return err;
     }
 
-    /* 功能：两段低电平凑复位 */
+    // 两段低电平凑复位
     uint32_t reset_half_ticks = ws2812_ns_to_ticks(WS2812_RESET_NS, res_hz) / 2U;
     if (reset_half_ticks == 0) {
         reset_half_ticks = 1;
@@ -265,7 +280,7 @@ static esp_err_t ws2812_new_encoder(uint32_t res_hz, rmt_encoder_handle_t *ret_e
     return ESP_OK;
 }
 
-/* 功能：纳秒换CPU周期 */
+// 纳秒换CPU周期
 static inline IRAM_ATTR uint32_t ws2812_ns_to_cycles(uint32_t ns)
 {
     uint32_t ticks_per_us = esp_rom_get_cpu_ticks_per_us();
@@ -276,14 +291,15 @@ static inline IRAM_ATTR uint32_t ws2812_ns_to_cycles(uint32_t ns)
     return (uint32_t)(((uint64_t)ns * (uint64_t)ticks_per_us) / 1000ULL);
 }
 
-/* 功能：翻转引脚发数据 */
+// 翻转引脚发数据
 static void IRAM_ATTR ws2812_bitbang_send(gpio_num_t gpio, const uint8_t *grb, uint32_t len)
 {
     const uint32_t t0h = ws2812_ns_to_cycles(WS2812_T0H_NS);
     const uint32_t t0l = ws2812_ns_to_cycles(WS2812_T0L_NS);
     const uint32_t t1h = ws2812_ns_to_cycles(WS2812_T1H_NS);
     const uint32_t t1l = ws2812_ns_to_cycles(WS2812_T1L_NS);
-    const uint32_t t0_total = t0h + t0l;    /* 功能：一位的总时长 */
+    // 一位的总时长
+    const uint32_t t0_total = t0h + t0l;
     const uint32_t t1_total = t1h + t1l;
     const uint32_t gpio_num = (uint32_t)gpio;
     const uint32_t bytes = len * 3U;
@@ -293,42 +309,42 @@ static void IRAM_ATTR ws2812_bitbang_send(gpio_num_t gpio, const uint8_t *grb, u
     for (uint32_t i = 0; i < bytes; i++) {
         uint8_t byte = grb[i];
 
-        /* 功能：从高位开始发 */
+        // 从高位开始发
         for (int bit = 7; bit >= 0; bit--) {
-            /* 功能：都从同一刻起算 */
+            // 都从同一刻起算
             uint32_t start = esp_cpu_get_cycle_count();
 
             if (byte & (uint8_t)(1U << bit)) {
                 gpio_ll_set_level(&GPIO, gpio_num, 1);
                 while ((uint32_t)(esp_cpu_get_cycle_count() - start) < t1h) {
-                    /* 功能：空转等够时间 */
+                    // 空转等够时间
                 }
                 gpio_ll_set_level(&GPIO, gpio_num, 0);
                 while ((uint32_t)(esp_cpu_get_cycle_count() - start) < t1_total) {
-                    /* 功能：空转等够时间 */
+                    // 空转等够时间
                 }
             } else {
                 gpio_ll_set_level(&GPIO, gpio_num, 1);
                 while ((uint32_t)(esp_cpu_get_cycle_count() - start) < t0h) {
-                    /* 功能：空转等够时间 */
+                    // 空转等够时间
                 }
                 gpio_ll_set_level(&GPIO, gpio_num, 0);
                 while ((uint32_t)(esp_cpu_get_cycle_count() - start) < t0_total) {
-                    /* 功能：空转等够时间 */
+                    // 空转等够时间
                 }
             }
         }
     }
 
-    /* 功能：发完拉低再放行 */
+    // 发完拉低再放行
     gpio_ll_set_level(&GPIO, gpio_num, 0);
     portENABLE_INTERRUPTS();
 
-    /* 功能：拉低一阵复位 */
+    // 拉低一阵复位
     esp_rom_delay_us(WS2812_BITBANG_RESET_US);
 }
 
-/* 功能：建一条灯带 */
+// 建一条灯带
 esp_err_t ws2812_new_strip(gpio_num_t gpio, uint32_t led_num, ws2812_strip_handle_t *out)
 {
     esp_err_t err = ESP_FAIL;
@@ -350,7 +366,7 @@ esp_err_t ws2812_new_strip(gpio_num_t gpio, uint32_t led_num, ws2812_strip_handl
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* 功能：先占一个通道 */
+    // 先占一个通道
     portENTER_CRITICAL(&s_strip_lock);
     if (s_strip_cnt >= WS2812_MAX_STRIPS) {
         portEXIT_CRITICAL(&s_strip_lock);
@@ -393,7 +409,8 @@ esp_err_t ws2812_new_strip(gpio_num_t gpio, uint32_t led_num, ws2812_strip_handl
         .trans_queue_depth = WS2812_TRANS_QUEUE_DEPTH,
         .intr_priority = 0,
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 1)
-        .flags.init_level = 0,      /* 功能：空闲时输出低 */
+        // 空闲时输出低
+        .flags.init_level = 0,
 #endif
     };
 
@@ -447,7 +464,7 @@ fail:
     return err;
 }
 
-/* 功能：给一颗灯上色 */
+// 给一颗灯上色
 esp_err_t ws2812_set_pixel(ws2812_strip_handle_t h, uint32_t index, uint8_t r, uint8_t g, uint8_t b)
 {
     if (h == NULL || h->buf == NULL) {
@@ -459,7 +476,7 @@ esp_err_t ws2812_set_pixel(ws2812_strip_handle_t h, uint32_t index, uint8_t r, u
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* 功能：顺序是绿红蓝 */
+    // 顺序是绿红蓝
     uint8_t *p = &h->buf[(size_t)index * 3U];
     p[0] = g;
     p[1] = r;
@@ -467,7 +484,7 @@ esp_err_t ws2812_set_pixel(ws2812_strip_handle_t h, uint32_t index, uint8_t r, u
     return ESP_OK;
 }
 
-/* 功能：整条一个颜色 */
+// 整条一个颜色
 esp_err_t ws2812_set_all(ws2812_strip_handle_t h, uint8_t r, uint8_t g, uint8_t b)
 {
     if (h == NULL || h->buf == NULL) {
@@ -483,7 +500,7 @@ esp_err_t ws2812_set_all(ws2812_strip_handle_t h, uint8_t r, uint8_t g, uint8_t 
     return ESP_OK;
 }
 
-/* 功能：把颜色发出去 */
+// 把颜色发出去
 esp_err_t ws2812_refresh(ws2812_strip_handle_t h)
 {
     if (h == NULL || h->buf == NULL || h->chan == NULL || h->encoder == NULL) {
@@ -492,8 +509,10 @@ esp_err_t ws2812_refresh(ws2812_strip_handle_t h)
     }
 
     const rmt_transmit_config_t tx_cfg = {
-        .loop_count = 0,            /* 功能：只发一次 */
-        .flags.eot_level = 0,       /* 功能：发完拉低锁色 */
+        // 只发一次
+        .loop_count = 0,
+        // 发完拉低锁色
+        .flags.eot_level = 0,
     };
 
     esp_err_t err = rmt_transmit(h->chan, h->encoder, h->buf,
@@ -511,7 +530,7 @@ esp_err_t ws2812_refresh(ws2812_strip_handle_t h)
     return ESP_OK;
 }
 
-/* 功能：清成全黑 */
+// 清成全黑
 esp_err_t ws2812_clear(ws2812_strip_handle_t h, bool do_refresh)
 {
     if (h == NULL || h->buf == NULL) {
@@ -526,7 +545,7 @@ esp_err_t ws2812_clear(ws2812_strip_handle_t h, bool do_refresh)
     return ESP_OK;
 }
 
-/* 功能：报灯珠数量 */
+// 报灯珠数量
 uint32_t ws2812_get_num(ws2812_strip_handle_t h)
 {
     if (h == NULL) {
@@ -535,7 +554,7 @@ uint32_t ws2812_get_num(ws2812_strip_handle_t h)
     return h->led_num;
 }
 
-/* 功能：翻转引脚直接发 */
+// 翻转引脚直接发
 esp_err_t ws2812_bitbang_write(gpio_num_t gpio, const uint8_t *grb, uint32_t len)
 {
     if (grb == NULL) {
@@ -550,12 +569,12 @@ esp_err_t ws2812_bitbang_write(gpio_num_t gpio, const uint8_t *grb, uint32_t len
         return ESP_OK;
     }
 
-    /* 功能：只配一次脚免刷屏 */
+    // 只配一次脚免刷屏
     static int s_bitbang_cfg_gpio = -1;
     esp_err_t err;
 
     if ((int)gpio != s_bitbang_cfg_gpio) {
-        /* 功能：先配脚再关中断 */
+        // 先配脚再关中断
         err = gpio_reset_pin(gpio);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "gpio_reset_pin(%d) failed: %s", (int)gpio, esp_err_to_name(err));

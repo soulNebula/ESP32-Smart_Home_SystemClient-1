@@ -1,14 +1,3 @@
-/*
- * 模块：
- *   I2C 总线。屏幕、温湿度和光照芯片都挂在这条线上，
- *   被 oled.c、sensor.c 用来读数据，开机时被 board.c 先叫起来。
- *
- * 功能：
- *   把 I2C 线拉起来
- *   交出总线把手
- *   看某个地址在不在
- *   扫一遍线上有啥
- */
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -16,46 +5,51 @@
 #include "esp_log.h"
 #include "driver/i2c_master.h"
 
-#include "i2c_bus.h"    /* 功能：含引脚配置 */
+// 含引脚配置
+#include "i2c_bus.h"
 
 static const char *TAG = "I2C_BUS";
 
-/* 功能：扫描的地址范围 */
+// 扫描的地址范围
 #define I2C_SCAN_ADDR_MIN       0x08
 #define I2C_SCAN_ADDR_MAX       0x77
 
-/* 功能：探测一次等50毫秒 */
+// 探测一次等50毫秒
 #define I2C_SCAN_PROBE_TIMEOUT_MS   50
 
-/* 功能：滤掉太短的毛刺 */
+// 滤掉太短的毛刺
 #define I2C_GLITCH_IGNORE_CNT       7
 
-/* 功能：总线把手先存这儿 */
+// 总线把手先存这儿
 static i2c_master_bus_handle_t s_bus = NULL;
 
-/* 功能：把 I2C 线拉起来 */
+// 把 I2C 线拉起来
 esp_err_t i2c_bus_init(void)
 {
-    /* 功能：起过就直接返回 */
+    // 起过就直接返回
     if (s_bus != NULL) {
         return ESP_OK;
     }
 
-    /* 功能：填脚和频率 */
+    // 填脚和频率
     const i2c_master_bus_config_t bus_cfg = {
         .i2c_port = BSP_I2C_PORT,
         .sda_io_num = BSP_I2C_SDA_GPIO,
         .scl_io_num = BSP_I2C_SCL_GPIO,
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = I2C_GLITCH_IGNORE_CNT,
-        .intr_priority = 0,         /* 功能：中断优先级默认 */
-        .trans_queue_depth = 0,     /* 功能：只同步发，不用队列 */
-        .flags.enable_internal_pullup = true,   /* 功能：再兜一层上拉 */
+        // 中断优先级默认
+        .intr_priority = 0,
+        // 只同步发，不用队列
+        .trans_queue_depth = 0,
+        // 再兜一层上拉
+        .flags.enable_internal_pullup = true,
     };
 
     esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus);
     if (err != ESP_OK) {
-        s_bus = NULL;               /* 功能：清了，下次能重试 */
+        // 清了，下次能重试
+        s_bus = NULL;
         ESP_LOGE(TAG, "i2c_new_master_bus failed: %s", esp_err_to_name(err));
         return err;
     }
@@ -66,13 +60,13 @@ esp_err_t i2c_bus_init(void)
     return ESP_OK;
 }
 
-/* 功能：交出总线把手 */
+// 交出总线把手
 i2c_master_bus_handle_t i2c_bus_get_handle(void)
 {
     return s_bus;
 }
 
-/* 功能：看地址在不在线 */
+// 看地址在不在线
 esp_err_t i2c_bus_probe(uint8_t dev_addr)
 {
     if (s_bus == NULL) {
@@ -82,7 +76,7 @@ esp_err_t i2c_bus_probe(uint8_t dev_addr)
     return i2c_master_probe(s_bus, dev_addr, BSP_I2C_TIMEOUT_MS);
 }
 
-/* 功能：扫一遍谁在线 */
+// 扫一遍谁在线
 int i2c_bus_scan(void)
 {
     if (s_bus == NULL) {
@@ -94,11 +88,11 @@ int i2c_bus_scan(void)
     ESP_LOGI(TAG, "scanning 0x%02X ~ 0x%02X ...", I2C_SCAN_ADDR_MIN, I2C_SCAN_ADDR_MAX);
 
     for (uint16_t addr = I2C_SCAN_ADDR_MIN; addr <= I2C_SCAN_ADDR_MAX; addr++) {
-        /* 功能：应答就算在线 */
+        // 应答就算在线
         if (i2c_master_probe(s_bus, addr, I2C_SCAN_PROBE_TIMEOUT_MS) == ESP_OK) {
             ESP_LOGI(TAG, "  found device at 0x%02X", (unsigned)addr);
 
-            /* 功能：标出认识的芯片 */
+            // 标出认识的芯片
             switch (addr) {
             case BSP_I2C_ADDR_SSD1306:
                 ESP_LOGI(TAG, "     ^ SSD1306 OLED");

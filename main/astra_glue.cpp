@@ -1,20 +1,10 @@
-/*
- * 模块：
- *   界面和业务的中间层。被 main.c 调用后起界面任务；向下用 astra 界面框架
- *   搭页面，把设备、传感器、网络、自检这些数据每帧写进页面字段；屏幕刷新和
- *   五键读取则以回调方式交给界面框架，页面按确定键时再回来执行动作。
- *   五键对应关系：3=上、4=下、1=左、2=右、OK=确定。
- *
- * 功能：
- *   起界面任务
- *   每帧刷新页面数据
- *   接五键和屏幕
- *   按确定就执行动作
- */
+// UI框架与智能家居业务之间通信层
+
 #include <cstdio>
 #include <cstring>
 #include <string>
 
+// FreeRTOS
 extern "C" {
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -28,49 +18,46 @@ extern "C" {
 #include "wifi_sta.h"
 #include "mqtt_app.h"
 #include "selftest.h"
-#include "voice_esp_sr.h"   /* 功能：语音识别弹窗提示 */
+#include "voice_esp_sr.h"   
 }
 
+// UI框架
 #include "astra_rocket.h"
 #include "astra_glue.h"
 
+// UI 页面对象
 static const char *TAG = "astra_glue";
 
-/* 功能：界面键位换成本机键 */
+// 键位映射：astra 键序 {UP, DOWN, LEFT, RIGHT, OK} → 本机五键键盘
 static const adkey_id_t KEY_MAP[key::KEY_NUM] = { ADKEY_3, ADKEY_4, ADKEY_1, ADKEY_2, ADKEY_OK };
 
-/* 功能：把硬件接口递过去 */
-
-static void flush_page_cb(uint8_t page, const uint8_t *data)
-{
+// OLED 刷新回调
+static void flush_page_cb(uint8_t page, const uint8_t *data) {
     oled_write_page(page, data);
 }
 
-static bool key_down_cb(uint8_t idx)
-{
+// 按键按下回调
+static bool key_down_cb(uint8_t idx) {
     if (idx >= key::KEY_NUM) {
         return false;
     }
     return adkey_is_pressed(KEY_MAP[idx]);
 }
 
-static void beep_cb(float freq)
-{
-    (void)freq;   /* 功能：本机没蜂鸣器 */
+// 蜂鸣器回调
+static void beep_cb(float freq) {
+    (void)freq;   
 }
 
-/* 功能：页面按确定干啥 */
-
-static void selftest_ok_cb(int itemIndex)
-{
+// 自检页面回调
+static void selftest_ok_cb(int itemIndex) {
     if (itemIndex >= 0 && itemIndex < (int)selftest_get_count()) {
         selftest_run_index((uint8_t)itemIndex);
     }
 }
 
-static void device_ok_cb(int itemIndex)
-{
-    /* 功能：页面八行对八设备 */
+// 设备页面回调
+static void device_ok_cb(int itemIndex) {
     static const device_id_t devs[UI_DEVICE_ITEMS] = {
         DEV_LED_LIVING, DEV_LED_KITCHEN, DEV_LED_BEDROOM, DEV_LED_BATH,
         DEV_FAN, DEV_WINDOW, DEV_DOOR, DEV_CURTAIN,
@@ -81,22 +68,21 @@ static void device_ok_cb(int itemIndex)
     device_toggle(devs[itemIndex], SRC_LOCAL_KEY);
 }
 
-static void auto_ok_cb(void)
-{
+// 刷新自动控制页面的动态数据
+static void auto_ok_cb(void) {
     const bool now = !automation_is_enabled();
     automation_set_enabled(now);
     automation_save();
     ESP_LOGI(TAG, "auto mode -> %s (by adkey)", now ? "ON" : "OFF");
 }
 
-/* 功能：每帧刷新页面 */
-
+// 刷新设备页面的动态数据
 static const char *const s_dev_cn[UI_DEVICE_ITEMS] = {
     "客厅灯", "厨房灯", "卧室灯", "浴室灯", "风扇", "窗户", "门", "窗帘",
 };
 
-static void refresh_home(void)
-{
+// 刷新各页面的动态数据
+static void refresh_home(void) {
     char buf[40];
     const sensor_data_t *s = sensor_get_last();
 
@@ -106,22 +92,19 @@ static void refresh_home(void)
         snprintf(buf, sizeof(buf), "--.-C --%%");
     }
     g_pageHome->tempHumiStr = buf;
-
     snprintf(buf, sizeof(buf), "光照 %d%% 雨滴 %d%%",
              (int)(s->light_pct + 0.5f), (int)(s->rain_pct + 0.5f));
     g_pageHome->lightRainStr = buf;
-
     snprintf(buf, sizeof(buf), "%s  %s",
              wifi_is_connected() ? "WiFi OK" : "WiFi 断开",
              mqtt_is_connected() ? "MQTT OK" : "MQTT 断开");
     g_pageHome->netStr = buf;
-
     snprintf(buf, sizeof(buf), "自动%s", automation_is_enabled() ? "开" : "关");
     g_pageHome->autoStr = buf;
 }
 
-static void refresh_selftest(void)
-{
+// 刷新自检页面的动态数据
+static void refresh_selftest(void) {
     const uint8_t cnt = selftest_get_count();
     const uint8_t cur = selftest_get_index();
     const uint8_t ph  = selftest_get_phase();
@@ -139,8 +122,8 @@ static void refresh_selftest(void)
     }
 }
 
-static void refresh_device(void)
-{
+// 刷新设备页面的动态数据
+static void refresh_device(void) {
     static const device_id_t devs[UI_DEVICE_ITEMS] = {
         DEV_LED_LIVING, DEV_LED_KITCHEN, DEV_LED_BEDROOM, DEV_LED_BATH,
         DEV_FAN, DEV_WINDOW, DEV_DOOR, DEV_CURTAIN,
@@ -153,8 +136,8 @@ static void refresh_device(void)
     }
 }
 
-static void refresh_sensor(void)
-{
+// 刷新传感器页面的动态数据
+static void refresh_sensor(void) {
     char buf[32];
     const sensor_data_t *s = sensor_get_last();
 
@@ -168,8 +151,8 @@ static void refresh_sensor(void)
     g_pageSensor->rainStr = buf;
 }
 
-static void refresh_auto(void)
-{
+// 刷新自动控制页面的动态数据
+static void refresh_auto(void) {
     const automation_cfg_t *c = automation_get_cfg();
     char buf[40];
 
@@ -191,8 +174,8 @@ static void refresh_auto(void)
     g_pageAuto->child[6]->title = buf;
 }
 
-static void refresh_dynamic(void)
-{
+// 刷新所有页面的动态数据
+static void refresh_dynamic(void) {
     refresh_home();
     refresh_selftest();
     refresh_device();
@@ -200,14 +183,10 @@ static void refresh_dynamic(void)
     refresh_auto();
 }
 
-/* 功能：界面任务主体 */
-
-static void astra_ui_task(void *arg)
-{
+// UI
+static void astra_ui_task(void *arg) {
     (void)arg;
     ESP_LOGI(TAG, "astra UI task start");
-
-    /* 功能：先把接口递过去 */
     astra_hal_set_flush_page_cb(flush_page_cb);
     astra_hal_set_key_down_cb(key_down_cb);
     astra_hal_set_beep_cb(beep_cb);
@@ -225,20 +204,20 @@ static void astra_ui_task(void *arg)
         refresh_dynamic();
         astraLauncher->update();
 
-        /* 功能：弹一句语音提示 */
+        // 语音提示弹窗
         if (g_voice_ui_note.pending) {
             std::string note(g_voice_ui_note.text);
             g_voice_ui_note.pending = 0;
             astraLauncher->popInfo(note, 1200);
         }
-
-        vTaskDelay(pdMS_TO_TICKS(1));   /* 功能：歇一小会儿 */
+        // 1000Hz 节拍下 1ms
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
-extern "C" void astra_ui_start(void)
-{
-    /* 功能：栈开大点够用 */
+// 启动任务
+extern "C" void astra_ui_start(void) {
+    // 栈：u8g2 画布渲染 + 阻塞弹窗循环
     if (xTaskCreate(astra_ui_task, "astra_ui", 12288, NULL, 3, NULL) != pdPASS) {
         ESP_LOGE(TAG, "create astra ui task failed");
     }

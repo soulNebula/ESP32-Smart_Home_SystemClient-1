@@ -1,24 +1,10 @@
-/*
- * 模块：
- *   五位键盘的判键单测。在电脑上跑，不用板子也不用 ESP-IDF，
- *   直接引固件那份阈值表，所以测的就是板上跑的那套判定。
- *   是 tools/run_adkey_test.ps1 把本文件编出来运行的；
- *   配套的实机验证是 tools/verify_adkey.ps1。
- *   编译器打不开带中文的路径，所以脚本先把本文件和 adkey_logic.h 两个文件
- *   拷到英文目录，编译时再用 -I 指过去，绕开编译器的死活路径。
- *
- * 功能：
- *   试五个键准不准
- *   试边界和噪声
- *   试旧逻辑的老毛病
- */
 #include <stdio.h>
 #include <string.h>
 
-/* 功能：拷到英文目录再编 */
+// 拷到英文目录再编
 #include "adkey_logic.h"
 
-/* 功能：出厂的那套阈值 */
+// 出厂的那套阈值
 static const adkey_logic_cfg_t CFG = {
     .key_mv         = { ADKEY_KEY1_MV, ADKEY_KEY2_MV, ADKEY_KEY3_MV, ADKEY_KEY4_MV },
     .tolerance      = ADKEY_TOLERANCE_MV,
@@ -28,7 +14,7 @@ static const adkey_logic_cfg_t CFG = {
     .ok_margin      = ADKEY_OK_MARGIN_MV,
 };
 
-/* 功能：备用那套，开了会误触 */
+// 备用那套，开了会误触
 static const adkey_logic_cfg_t CFG_HIGH = {
     .key_mv         = { ADKEY_KEY1_MV, ADKEY_KEY2_MV, ADKEY_KEY3_MV, ADKEY_KEY4_MV },
     .tolerance      = ADKEY_TOLERANCE_MV,
@@ -38,7 +24,7 @@ static const adkey_logic_cfg_t CFG_HIGH = {
     .ok_margin      = ADKEY_OK_MARGIN_MV,
 };
 
-/* 功能：手没按时量到的值 */
+// 手没按时量到的值
 #define IDLE_MV 3128
 
 static int g_pass = 0;
@@ -56,7 +42,7 @@ static const char *key_name(int r)
     }
 }
 
-/* 功能：修改前的老判法 */
+// 修改前的老判法
 static int old_match(int mv, int idle_mv)
 {
     if (mv < 0 || mv >= idle_mv - ADKEY_OK_MARGIN_MV) return ADKEY_LOGIC_NONE;

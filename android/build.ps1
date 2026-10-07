@@ -1,35 +1,21 @@
-﻿# 模块：
-#   打包脚本。在 Windows 上把手机 App 编成能装的 APK。
-#   工程路径里有中文，安卓那套工具容易犯病，所以先把源码整个抄到
-#   一个纯英文目录（默认 C:\smarthome_app）再编，编好了把 APK 拿回来。
-#   原目录照样是正本，只借用镜像目录干活。路径本来就是英文就直接原地编。
-#   用的编译单是 android/build.gradle.kts 和 android/app/build.gradle.kts。
-#
-# 功能：
-#   找 JDK
-#   找安卓 SDK
-#   找 Gradle
-#   抄一份到英文目录
-#   开始编译
-#   把 APK 收回来
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
-    # 功能：编哪个包，默认调试包
+    # 编哪个包，默认调试包
     [string]$Task = 'assembleDebug',
 
-    # 功能：纯粹的英文目录
+    # 纯粹的英文目录
     [string]$Mirror = 'C:\smarthome_app',
 
-    # 功能：只用本地缓存
+    # 只用本地缓存
     [switch]$Offline,
 
-    # 功能：默认不留常驻进程
+    # 默认不留常驻进程
     [switch]$Daemon,
 
-    # 功能：多出来的参数照传
+    # 多出来的参数照传
     [string[]]$ExtraArgs = @(),
 
-    # 功能：就在原地编
+    # 就在原地编
     [switch]$InPlace
 )
 
@@ -45,7 +31,7 @@ function Test-Ascii([string]$s) {
     return $true
 }
 
-# 功能：先找 JDK
+# 先找 JDK
 Write-Step 'Locating JDK 21'
 $jbr = 'C:\Program Files\Android\Android Studio\jbr'
 if (Test-Path (Join-Path $jbr 'bin\java.exe')) {
@@ -59,7 +45,7 @@ if (Test-Path (Join-Path $jbr 'bin\java.exe')) {
     Write-Warn "Using java from PATH: $($java.Source)"
 }
 
-# 功能：再找安卓 SDK
+# 再找安卓 SDK
 Write-Step 'Locating Android SDK'
 $sdkCandidates = @(
     $env:ANDROID_HOME,
@@ -73,7 +59,7 @@ $env:ANDROID_HOME     = $sdkCandidates[0]
 $env:ANDROID_SDK_ROOT = $sdkCandidates[0]
 Write-Ok "ANDROID_HOME = $($sdkCandidates[0])"
 
-# 功能：找编译工具
+# 找编译工具
 Write-Step 'Locating Gradle'
 $src = Split-Path -Parent $MyInvocation.MyCommand.Path
 $gradleCmd = $null
@@ -82,7 +68,7 @@ if ((Test-Path (Join-Path $src 'gradlew.bat')) -and (Test-Path (Join-Path $src '
     $gradleCmd = Join-Path $src 'gradlew.bat'
     Write-Ok "Using wrapper: $gradleCmd"
 } else {
-    # 功能：本地缓存里翻一个
+    # 本地缓存里翻一个
     $dists = Join-Path $env:USERPROFILE '.gradle\wrapper\dists'
     $found = Get-ChildItem $dists -Directory -ErrorAction SilentlyContinue |
         ForEach-Object { Get-ChildItem $_.FullName -Directory -ErrorAction SilentlyContinue } |
@@ -101,7 +87,7 @@ if (-not $gradleCmd) {
     exit 1
 }
 
-# 功能：选在哪儿编
+# 选在哪儿编
 $buildDir = $src
 $useMirror = (-not $InPlace) -and (-not (Test-Ascii $src))
 
@@ -109,7 +95,7 @@ if ($useMirror) {
     Write-Step "Mirroring source to $Mirror"
     if (-not (Test-Ascii $Mirror)) { Write-Err "Mirror path must be pure ASCII: $Mirror"; exit 1 }
     New-Item -ItemType Directory -Force -Path $Mirror | Out-Null
-    # 功能：整个抄过去
+    # 整个抄过去
     robocopy $src $Mirror /MIR /NFL /NDL /NJH /NJS /NP /XD apk build .gradle | Out-Null
     Write-Ok "Mirrored $src -> $Mirror"
     $buildDir = $Mirror
@@ -117,9 +103,9 @@ if ($useMirror) {
     Write-Warn 'Building in place (pure-ASCII path or -InPlace).'
 }
 
-# 功能：开始编译
+# 开始编译
 Write-Step "Gradle $Task"
-# 功能：明确指到镜像目录
+# 明确指到镜像目录
 $gradleArgs = @('-p', $buildDir, $Task, '--console=plain', '-Dfile.encoding=UTF-8')
 if (-not $Daemon)                        { $gradleArgs += '--no-daemon' }
 if ($Offline)                            { $gradleArgs += '--offline' }
@@ -132,11 +118,11 @@ Write-Host "  log    $logPath" -ForegroundColor DarkGray
 Push-Location $buildDir
 $code = 0
 if ($Daemon) {
-    # 功能：留常驻时直接跑
+    # 留常驻时直接跑
     & $gradleCmd @gradleArgs
     $code = $LASTEXITCODE
 } else {
-    # 功能：日志写文件别用管道
+    # 日志写文件别用管道
     & $gradleCmd @gradleArgs *> $logPath
     $code = $LASTEXITCODE
     if (Test-Path $logPath) {
@@ -152,7 +138,7 @@ if ($code -ne 0) {
 }
 Write-Ok "Gradle $Task succeeded"
 
-# 功能：把包收回来
+# 把包收回来
 Write-Step 'Collecting APKs'
 $outDir = Join-Path $src 'apk'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
