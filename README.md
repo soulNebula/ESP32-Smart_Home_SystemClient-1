@@ -281,18 +281,22 @@ Linux 上只需要系统自带的 `python3`（一般都有）。
 └──────────────────────────────────────────────────────┘
 ```
 
-它会自己从官方源把缺的东西下齐（走 Espressif 国内镜像，实测 5 MB/s）：
+它会自己从官方源把缺的东西下齐（走 Espressif 国内镜像，实测 2~5 MB/s）：
 
 | 下载什么 | 从哪下 | 多大 |
 |---|---|---|
 | ESP-IDF 5.4.4 源码 | `dl.espressif.com` | 1.9 GB（解压后只留 357 MB） |
 | xtensa 交叉编译器 | `dl.espressif.com` | 约 250 MB |
 | CMake / Ninja / ROM 链接脚本 | `dl.espressif.com` | 约 55 MB |
-| ESP-IDF 的 Python 依赖 | PyPI | 约 60 MB |
+| ESP-IDF 的 Python 依赖 | PyPI（慢就自动换清华镜像） | 约 60 MB |
 | esp-sr 语音组件 | `components.espressif.com` | 约 230 MB |
 
 **全部落在 `.idf-sandbox/` 里面** —— 不装 C 编译器、不改 PATH、不写注册表、
 不装全局 Python 包。卸载就是把文件夹删掉，一个字节都不留在系统里。
+
+> **想知道它到底行不行？** 实测过：把环境删干净只留 42.6 MB 脚本，
+> 从头跑一遍 —— 4 步全过、自检全绿、编译 123.4 秒，
+> 出来的 `esp32_smart_home.bin` 和完整工程编的**逐字节一致**（`0x1dcc80`）。
 
 命令行等价操作：
 
@@ -303,14 +307,18 @@ python .idf-sandbox\start.py prepare --download     :: Windows
 python3 .idf-sandbox/start.py prepare --download    # Linux
 ```
 
-配套的两个命令（一般用图形界面上的按钮就行）：
+配套命令（一般用图形界面上的按钮就行）：
 
 ```bat
 python .idf-sandbox\start.py prepare --check          :: 自检：每项都真跑一遍
 python .idf-sandbox\start.py prepare --prune          :: 看能清理多少（不删）
-python .idf-sandbox\start.py prepare --prune --yes    :: 真删，腾硬盘
+python .idf-sandbox\start.py prepare --prune --yes    :: 真删，腾硬盘（约 1.7 GB）
 python .idf-sandbox\start.py prepare --fetch linux    :: 在 Windows 上给 Linux 备好工具链
 ```
+
+**要拷到 Linux 机器上？** Linux 那套工具链默认不装（省 1.4 GB）。
+先跑一次 `prepare --fetch linux` 备好再拷（约 3 分钟）；
+那台机器能上网的话，也可以到了那边直接点「配置沙箱环境」。
 
 **下完会自己检查**，每一项都真的跑一遍（不是只看文件在不在）：
 
@@ -640,7 +648,7 @@ powershell -ExecutionPolicy Bypass -File tools\monitor\monitor.ps1 -Port COM31
 | Linux，有 IDF | 直接用 `tools/build/build.sh` | 无 |
 | Windows，有 IDF | 直接用 `tools\build\build.ps1` | 无 |
 
-绿色包怎么传：工程整体约 **3.7 GB**（沙箱 3.3 GB + 源码 + 语音组件）。
+绿色包怎么传：工程整体约 **2.5 GB**（沙箱 2.2 GB + 源码 + 语音组件）。
 直接拷文件夹最省事（U 盘 / 网盘 / 局域网共享都行）。
 要打包成 zip 的话用 7-Zip 之类支持 Zip64 的工具，
 Windows 自带的"压缩(zipped)文件夹"对 2 GB 以上的包容易出问题。

@@ -117,6 +117,7 @@ python .idf-sandbox\start.py prepare --fetch linux    :: 在 Windows 上给 Linu
 └── sandbox.json    版本清单
 ```
 
-体积约 3.3 GB（Windows 侧 1.9 GB + Linux 侧 1.4 GB），其中工具链占大头。
+体积：Windows 侧约 2.2 GB（工具链 1.5 GB + ESP-IDF 源码 357 MB + Python 84 MB）。
+Linux 侧那套（约 1.4 GB）默认不装 —— 要用先跑 `prepare --fetch linux`。
 
 
