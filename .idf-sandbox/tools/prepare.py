@@ -21,17 +21,20 @@
 * 环境变量 ``IDF_PATH`` 指的目录
 
 ``--download`` 走官方渠道：ESP-IDF 源码走 GitHub release 压缩包，
-工具链走 ``idf_tools.py install``（Espressif 官方下载器，支持国内镜像）。
-注意：便携 Python 没法从网上下——它必须跟着沙箱一起拷过来。
+工具链走 ``idf_tools.py install``（Espressif 官方下载器，走国内镜像）。
+便携 Python 不在下载范围里 —— 在线配置直接用这台电脑的 Python 建虚拟环境。
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import posixpath
 import shutil
 import subprocess
 import sys
+import tarfile
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -45,9 +48,10 @@ if sys.version_info < (3, 9):
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core import (NO_WINDOW, Reporter, Sandbox, init_console, human_size,  # noqa: E402
-                  dir_size, open_log, pause_if_needed)
+                  dir_size, open_log, pause_if_needed, _python_version)
 
 IDF_VERSION = '5.4.4'
+IDF_GITHUB_ASSETS = 'dl.espressif.com/github_assets'
 IDF_ZIP_URLS = (
     f'https://dl.espressif.com/github_assets/espressif/esp-idf/releases/download/v{IDF_VERSION}/esp-idf-v{IDF_VERSION}.zip',
     f'https://github.com/espressif/esp-idf/releases/download/v{IDF_VERSION}/esp-idf-v{IDF_VERSION}.zip',
@@ -67,8 +71,20 @@ PIO_TOOL_MAP = {
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='准备 / 修复便携沙箱')
+    parser.add_argument('--download', action='store_true',
+                        help='在线配置：缺什么就从官方渠道下什么（推荐）')
+    parser.add_argument('--check', action='store_true',
+                        help='只做自检：每一项都真跑一遍，看能不能用')
+    parser.add_argument('--prune', action='store_true',
+                        help='清理可以重新生成/重新下载的东西，腾硬盘空间')
+    parser.add_argument('--deep', action='store_true',
+                        help='配合 --prune：连工具链和 ESP-IDF 源码也删（下次要重新下）')
+    parser.add_argument('--yes', action='store_true',
+                        help='配合 --prune：真的删（不加只预览）')
+    parser.add_argument('--fetch', default='', metavar='平台',
+                        help='给另一个平台备工具链（windows / linux），'
+                             '这样整个文件夹拷到那台机器就能直接用')
     parser.add_argument('--repair', action='store_true', help='从本机已装的 ESP-IDF 补齐缺的东西')
-    parser.add_argument('--download', action='store_true', help='缺什么就从官方渠道下载什么')
     parser.add_argument('--from', dest='source', default='',
                         help='指定来源目录（官方 ESP-IDF 安装根目录，或 PlatformIO 的 packages 目录）')
     parser.add_argument('--force', action='store_true', help='已经有的也重新拷一遍')
@@ -290,12 +306,14 @@ def install_tools(sandbox: Sandbox, source: Source, reporter: Reporter, force: b
 def download_idf(sandbox: Sandbox, reporter: Reporter) -> bool:
     dest = sandbox.idf_dir
     url = ''
+    size = 0
     for candidate in IDF_ZIP_URLS:
         try:
             reporter.info(f'试探下载地址：{candidate}')
             with urllib.request.urlopen(candidate, timeout=20) as response:
                 if response.status == 200:
                     url = candidate
+                    size = int(response.headers.get('Content-Length') or 0)
                     break
         except Exception as exc:
             reporter.warn(f'连不上（{exc}）')
@@ -305,7 +323,9 @@ def download_idf(sandbox: Sandbox, reporter: Reporter) -> bool:
 
     archive = sandbox.root / 'download' / f'esp-idf-v{IDF_VERSION}.zip'
     archive.parent.mkdir(parents=True, exist_ok=True)
-    reporter.info(f'下载 ESP-IDF {IDF_VERSION}（约 250 MB，慢慢等）')
+    how_big = human_size(size) if size else '约 1.9 GB'
+    reporter.info(f'下载 ESP-IDF {IDF_VERSION} 源码包（{how_big}，耐心等；'
+                  f'解压后只留 {human_size(400 * 1024 * 1024)} 左右）')
     try:
         _download_with_progress(url, archive, reporter)
     except Exception as exc:
@@ -335,6 +355,14 @@ def download_idf(sandbox: Sandbox, reporter: Reporter) -> bool:
         reporter.error(f'解压失败：{exc}')
         return False
     archive.unlink(missing_ok=True)
+
+    # zip 里没有 version.txt（那是 git 检出的产物），补一个。
+    # 没有它 idf.py 会给组件管理器一个空的 ESP_IDF_VERSION，直接抛异常。
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / 'version.txt').write_text(f'v{IDF_VERSION}\n', encoding='utf-8')
+    except OSError:
+        pass
     return True
 
 
@@ -361,6 +389,41 @@ def _download_with_progress(url: str, dest: Path, reporter: Reporter) -> None:
         reporter.raw('\r' + ' ' * 60 + '\r')
 
 
+def _run_streamed(cmd: list, env: dict, cwd: Path, reporter: Reporter,
+                  tail: int = 12) -> bool:
+    """跑一个子进程，把它的输出一行行转给 reporter
+
+    为什么不直接 subprocess.run(继承 stdout)：官方下载器（idf_tools.py）会刷
+    进度条、带颜色，直接在 GBK 控制台上吐字会 **UnicodeEncodeError 把自己搞死**，
+    而且它的报错也会丢在控制台里看不见。这里统一抓过来自己解码，
+    既能显示在 GUI 里，出错了也能把最后几行留下来给用户看。
+    """
+    try:
+        proc = subprocess.Popen(
+            cmd, env=env, cwd=str(cwd), stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
+    except OSError as exc:
+        reporter.error(f'启动子进程失败：{exc}')
+        return False
+
+    recent: list[str] = []
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        text = raw.decode('utf-8', 'replace').rstrip('\r\n')
+        if not text.strip():
+            continue
+        recent.append(text)
+        if len(recent) > tail:
+            recent.pop(0)
+        reporter.raw(f'    {text[:110]}\n')
+    code = proc.wait()
+    if code != 0:
+        reporter.error(f'子进程退出码 {code}，最后几行：')
+        for line in recent[-tail:]:
+            reporter.hint(line[:110])
+    return code == 0
+
+
 def download_tools(sandbox: Sandbox, reporter: Reporter) -> bool:
     """用官方下载器装这一套平台对应的工具链
 
@@ -369,7 +432,7 @@ def download_tools(sandbox: Sandbox, reporter: Reporter) -> bool:
     * 在 Windows 上跑，装的是 ``idf_tools/``（*.exe）
     * 在 Linux 上跑，装的是 ``idf_tools-linux/``（ELF）
 
-    Linux 上不一定有沙箱自带的 Python，那就借系统那个来跑下载器。
+    自带国内镜像，速度还行（实测 2~5 MB/s）。
     """
     if not sandbox.idf_py.is_file():
         reporter.error('得先有 ESP-IDF 才能下载工具链')
@@ -386,10 +449,8 @@ def download_tools(sandbox: Sandbox, reporter: Reporter) -> bool:
     cmd = [str(python), str(sandbox.idf_dir / 'tools' / 'idf_tools.py'),
            'install'] + tools
     reporter.info(f'平台：{sandbox.host}   目标目录：{sandbox.idf_tools_dir}')
-    reporter.info('调用官方下载器 idf_tools.py install（会自动用国内镜像）')
-    result = subprocess.run(cmd, env=env, cwd=str(sandbox.idf_dir),
-                            creationflags=NO_WINDOW)
-    return result.returncode == 0
+    reporter.info('调用官方下载器 idf_tools.py install（自动走国内镜像，约 400 MB）')
+    return _run_streamed(cmd, env, sandbox.idf_dir, reporter)
 
 
 def prepare_python_env(sandbox: Sandbox, reporter: Reporter) -> bool:
@@ -428,17 +489,512 @@ def prepare_python_env(sandbox: Sandbox, reporter: Reporter) -> bool:
         return True
 
     env = sandbox.build_env()
-    pip = [str(sandbox.venv_python), '-m', 'pip']
+    pip = [str(sandbox.venv_python), '-m', 'pip', 'install',
+           '--disable-pip-version-check', '--no-color', '--progress-bar', 'off']
     reporter.info('安装 ESP-IDF 的 Python 依赖（第一次要联网，几分钟）')
-    for args in (['install', '--upgrade', 'pip'],
-                 ['install', '-r', str(req)]):
-        result = subprocess.run(pip + args, env=env, cwd=str(sandbox.idf_dir),
+    # 先走默认源；国内网络慢的话换清华镜像再来一次
+    mirrors = [
+        [],
+        ['-i', 'https://pypi.tuna.tsinghua.edu.cn/simple'],
+    ]
+    ok = False
+    for extra in mirrors:
+        if extra:
+            reporter.warn('默认源太慢，换清华镜像重试……')
+        result = subprocess.run(pip + extra + ['-r', str(req)], env=env,
+                                cwd=str(sandbox.idf_dir),
                                 creationflags=NO_WINDOW)
-        if result.returncode != 0:
-            reporter.error(f'pip {" ".join(args)} 失败')
-            reporter.hint('检查网络；国内网络慢的话可以先设 pip 镜像：')
-            reporter.hint('  set PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple')
+        if result.returncode == 0:
+            ok = True
+            break
+    if not ok:
+        reporter.error('pip install 失败')
+        reporter.hint('检查网络；也可以自己指定镜像：')
+        reporter.hint('  set PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple')
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# 在线配置：联网把沙箱搭起来，再自检
+# ---------------------------------------------------------------------------
+
+def _step(reporter: Reporter, index: int, total: int, title: str, state: str) -> None:
+    mark = {'ok': '[已有]', 'new': '[下载]', 'skip': '[跳过]', 'fail': '[失败]'}.get(state, '[····]')
+    color = {'ok': 'green', 'new': 'cyan', 'skip': 'yellow', 'fail': 'red'}.get(state, 'white')
+    reporter.line('')
+    reporter.line(reporter.c(f'  {mark} [{index}/{total}] {title}', color))
+
+
+def ensure_components(sandbox: Sandbox, reporter: Reporter) -> bool:
+    """把工程的组件依赖（esp-sr 那些）拉到 managed_components/
+
+    靠的是 ESP-IDF 官方的组件管理器，从 components.espressif.com 下载。
+    这一步只动**被编译工程**目录下的 managed_components/，不碰系统。
+    """
+    project = sandbox.project
+    marker = project / 'managed_components'
+    manifest = project / 'main' / 'idf_component.yml'
+    if marker.is_dir() and any(marker.iterdir()):
+        reporter.info(f'组件依赖已就绪（{human_size(dir_size(marker))}）')
+        return True
+    if not manifest.is_file():
+        reporter.info('这个工程没有 idf_component.yml，不需要下组件')
+        return True
+    if not sandbox.idf_py.is_file():
+        reporter.warn('没有 ESP-IDF 源码，跳过组件下载')
+        return False
+
+    reporter.info('用组件管理器拉依赖（第一次要联网，约 230 MB）')
+    env = sandbox.build_env(component_manager=True)   # 这一步必须开着组件管理器
+    cmd = [str(sandbox.venv_python), str(sandbox.idf_py), 'reconfigure']
+    if not _run_streamed(cmd, env, project, reporter, tail=20):
+        reporter.error('组件下载失败')
+        reporter.hint('检查网络；也可以手动跑一次看详细报错：')
+        reporter.hint(f'  {sandbox.venv_python} {sandbox.idf_py} reconfigure')
+        return False
+    return marker.is_dir()
+
+
+def self_check(sandbox: Sandbox, reporter: Reporter) -> bool:
+    """配完自检 —— 每一项都真的跑一下，不只看文件在不在
+
+    这是"下完了到底能不能用"的唯一答案。光看文件存在是不够的：
+    有可能下载被截断、解压出错、或者 Python 依赖装了一半。
+    """
+    reporter.banner('自检')
+    problems: list[str] = []
+
+    # 1) 沙箱骨架
+    if sandbox.idf_py.is_file():
+        reporter.ok(f'ESP-IDF 源码        {sandbox.idf_version or "?"}')
+    else:
+        problems.append('缺 ESP-IDF 源码')
+        reporter.error('ESP-IDF 源码        缺')
+
+    # 2) Python 环境真的能 import
+    if sandbox.venv_python.is_file():
+        probe = ('import click, serial, cryptography, yaml, elftools, '
+                 'kconfiglib, esp_idf_monitor; print("ok")')
+        try:
+            result = subprocess.run(
+                [str(sandbox.venv_python), '-c', probe],
+                capture_output=True, text=True, encoding='utf-8',
+                errors='replace', timeout=120, creationflags=NO_WINDOW)
+            if result.returncode == 0 and 'ok' in result.stdout:
+                reporter.ok(f'Python 环境         {_python_version(sandbox.venv_python)}')
+            else:
+                tail = (result.stderr or '').strip().splitlines()
+                problems.append('Python 依赖装得不全')
+                reporter.error('Python 依赖         ' + (tail[-1][:60] if tail else '导入失败'))
+        except Exception as exc:
+            problems.append(f'Python 环境跑不起来：{exc}')
+            reporter.error(f'Python 环境         {exc}')
+    else:
+        problems.append('没有 Python 环境')
+        reporter.error('Python 环境         缺')
+
+    # 3) 交叉编译器真的能跑
+    gcc = None
+    tool_dir = sandbox.idf_tools_dir / 'tools' / 'xtensa-esp-elf'
+    if tool_dir.is_dir():
+        for path in tool_dir.rglob('xtensa-esp32s3-elf-gcc*'):
+            if path.is_file():
+                gcc = path
+                break
+    if gcc is not None:
+        env = sandbox.build_env()
+        try:
+            result = subprocess.run([str(gcc), '--version'], env=env,
+                                    capture_output=True, text=True,
+                                    encoding='utf-8', errors='replace',
+                                    timeout=60, creationflags=NO_WINDOW)
+            if result.returncode == 0:
+                first = (result.stdout or '').splitlines()[0][:58]
+                reporter.ok(f'交叉编译器          {first}')
+            else:
+                problems.append('交叉编译器跑不起来')
+                reporter.error('交叉编译器          执行失败')
+        except Exception as exc:
+            problems.append(f'交叉编译器跑不起来：{exc}')
+            reporter.error(f'交叉编译器          {exc}')
+    else:
+        problems.append('缺交叉编译器')
+        reporter.error('交叉编译器          缺')
+
+    # 4) 端到端：让 idf.py 自己说版本（这一条过了基本就稳了）
+    if sandbox.idf_py.is_file() and sandbox.venv_python.is_file():
+        try:
+            env = sandbox.build_env()
+            result = subprocess.run(
+                [str(sandbox.venv_python), str(sandbox.idf_py), '--version'],
+                env=env, cwd=str(sandbox.project), capture_output=True,
+                text=True, encoding='utf-8', errors='replace', timeout=180,
+                creationflags=NO_WINDOW)
+            text = ((result.stdout or '') + (result.stderr or '')).strip()
+            if result.returncode == 0 and 'ESP-IDF' in text:
+                reporter.ok(f'idf.py 端到端       {text.splitlines()[0][:58]}')
+            else:
+                problems.append('idf.py 跑不起来')
+                for line in text.splitlines()[-3:]:
+                    reporter.hint(line[:90])
+                reporter.error('idf.py 端到端       失败')
+        except Exception as exc:
+            problems.append(f'idf.py 跑不起来：{exc}')
+            reporter.error(f'idf.py 端到端       {exc}')
+
+    # 5) 组件依赖
+    comps = sandbox.project / 'managed_components'
+    if comps.is_dir() and any(comps.iterdir()):
+        reporter.ok(f'组件依赖            {human_size(dir_size(comps))}')
+    elif (sandbox.project / 'main' / 'idf_component.yml').is_file():
+        reporter.warn('组件依赖            还没有（第一次编译时会自动下）')
+    else:
+        reporter.ok('组件依赖            这个工程不需要')
+
+    reporter.line('')
+    if problems:
+        reporter.error('自检没过，还差：')
+        for item in problems:
+            reporter.line(f'           {item}')
+        reporter.hint('再跑一次会自动续传：python .idf-sandbox/start.py prepare --download')
+        return False
+    reporter.ok('自检全部通过 —— 可以点"一键编译烧录"了')
+    return True
+
+
+def online_setup(sandbox: Sandbox, reporter: Reporter) -> bool:
+    """联网把沙箱配齐：缺什么下什么，已有的跳过，最后自检
+
+    所有东西都落在 `.idf-sandbox/` 里，不往系统目录写一个字节：
+    不装 C 编译器、不动 PATH、不碰注册表、不装全局 Python 包。
+    下载的压缩包放在 `download/`，解压完立刻删掉。
+    """
+    reporter.banner('在线配置沙箱环境')
+    reporter.line(f'  沙箱目录：{sandbox.root}')
+    reporter.line(f'  当前系统：{sandbox.host}')
+    reporter.line(f'  当前解释器：{sys.executable}  ({_python_version(Path(sys.executable))})')
+    if sandbox.host != 'windows':
+        reporter.line('  （Linux 上用系统自带的 python3，不额外下载 Python）')
+    reporter.line('')
+    reporter.line('  全部下载到沙箱目录内，不污染这台电脑。')
+    reporter.line('  中途断了不要紧，再跑一次会接着下。')
+
+    total = 4
+    cache = sandbox.root / 'download'
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    # 1) ESP-IDF 源码（工具链要靠它的 tools.json 才知道从哪下）
+    if sandbox.idf_py.is_file():
+        _step(reporter, 1, total, 'ESP-IDF 源码', 'ok')
+        reporter.info(f'已有 {sandbox.idf_version}')
+    else:
+        _step(reporter, 1, total, 'ESP-IDF 源码', 'new')
+        if not download_idf(sandbox, reporter):
             return False
+
+    # 2) Python 环境（建 venv + 装 ESP-IDF 的依赖）
+    if sandbox.venv_python.is_file():
+        _step(reporter, 2, total, 'Python 环境', 'ok')
+        reporter.info(str(sandbox.venv_dir))
+    else:
+        _step(reporter, 2, total, 'Python 环境', 'new')
+        if not prepare_python_env(sandbox, reporter):
+            return False
+
+    # 3) 交叉工具链
+    missing = sandbox.missing_required_tools()
+    if missing:
+        _step(reporter, 3, total, f'交叉工具链（缺 {", ".join(missing)}）', 'new')
+        if not download_tools(sandbox, reporter):
+            return False
+    else:
+        _step(reporter, 3, total, '交叉工具链', 'ok')
+        reporter.info(f'{human_size(dir_size(sandbox.idf_tools_dir))}')
+
+    # 4) 工程组件依赖
+    _step(reporter, 4, total, '工程组件依赖', 'new')
+    ensure_components(sandbox, reporter)
+
+    # 收尾：把下载缓存删掉，别占地方
+    cleanup_downloads(sandbox, reporter)
+
+    return self_check(sandbox, reporter)
+
+
+def cleanup_downloads(sandbox: Sandbox, reporter: Reporter) -> None:
+    """下载缓存用完就删 —— 它们都能重新下，留着纯占地方"""
+    cache = sandbox.root / 'download'
+    if not cache.is_dir():
+        return
+    try:
+        freed = dir_size(cache)
+        shutil.rmtree(cache, ignore_errors=True)
+        if freed:
+            reporter.info(f'清掉下载缓存，释放 {human_size(freed)}')
+    except OSError:
+        pass
+
+
+def prune(sandbox: Sandbox, reporter: Reporter, deep: bool = False,
+          really: bool = False) -> int:
+    """删掉"没了也能再弄回来"的东西，给硬盘腾地方
+
+    默认删这些（都是缓存/产物，不影响沙箱本身）：
+
+    * ``build/``                    编译产物，下次编译自动重建
+    * ``.idf-sandbox/download/``    下载缓存，解压完就没用了
+    * ``.idf-sandbox/logs/`` ``tmp/``
+    * 所有 ``__pycache__``
+    * **另一个平台**的工具链         Windows 上留着 Linux 那套没用，反之亦然
+
+    ``deep=True`` 时连**当前平台**的工具链也删掉 —— 下次点「配置沙箱环境」
+    能重新下回来（约 400 MB，几分钟）。这一条只在你确定暂时不需要编译时用。
+    """
+    other = 'linux' if sandbox.host == 'windows' else 'windows'
+    plan: list[tuple[str, Path]] = [
+        ('编译产物 build/', sandbox.project / 'build'),
+        ('下载缓存 download/', sandbox.root / 'download'),
+        ('日志 logs/', sandbox.root / 'logs'),
+        ('临时 tmp/', sandbox.root / 'tmp'),
+        (f'另一个平台的工具链 idf_tools-{other}/（当前系统是 {sandbox.host}）',
+         sandbox.root / f'idf_tools-{other}'),
+        (f'另一个平台的虚拟环境 penv-{other}/', sandbox.root / f'penv-{other}'),
+        (f'另一个平台的 Python python-{other}/', sandbox.root / f'python-{other}'),
+    ]
+    if deep:
+        plan.append((f'当前平台的工具链（{sandbox.host}，约 1.5 GB）',
+                     sandbox.idf_tools_dir))
+        plan.append(('ESP-IDF 源码（约 355 MB）', sandbox.idf_dir))
+        plan.append(('工程组件依赖 managed_components/', sandbox.project / 'managed_components'))
+
+    reporter.banner('清理可以重新生成的东西')
+    if not really:
+        reporter.warn('这是预览（加 --yes 才真删）：')
+    freed = 0
+    for label, path in plan:
+        if not path.exists():
+            continue
+        size = dir_size(path) if path.is_dir() else path.stat().st_size
+        if not really:
+            reporter.line(f'  · {label:<44} {human_size(size)}')
+            freed += size
+            continue
+        try:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink()
+            reporter.ok(f'  删掉 {label}（{human_size(size)}）')
+            freed += size
+        except OSError as exc:
+            reporter.warn(f'  删不掉 {label}：{exc}')
+
+    # __pycache__ 到处都是，单独扫一遍
+    cache_total = 0
+    for path in list(sandbox.root.rglob('__pycache__')) + \
+            list(sandbox.project.rglob('__pycache__')):
+        if '__pycache__' not in path.parts:
+            continue
+        try:
+            size = dir_size(path)
+            if really:
+                shutil.rmtree(path, ignore_errors=True)
+            cache_total += size
+        except OSError:
+            pass
+    if cache_total:
+        freed += cache_total
+        verb = '删掉' if really else '可删'
+        reporter.line(f'  · {verb} __pycache__（{human_size(cache_total)}）')
+
+    reporter.line('')
+    if freed:
+        verb = '已释放' if really else '可以释放'
+        reporter.ok(f'{verb} {human_size(freed)}')
+    else:
+        reporter.ok('已经很干净了，没东西可删')
+    if not really and freed:
+        reporter.hint('确认要删就加 --yes：')
+        reporter.hint(f'  python {sandbox.root / "start.py"} prepare --prune --yes')
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# 给另一个平台备货（在 Windows 上把 Linux 那套下好，反之亦然）
+# ---------------------------------------------------------------------------
+
+def _mirror(url: str) -> str:
+    """github.com/... -> Espressif 镜像（国内直连 github 经常超时）"""
+    prefix = 'https://github.com/'
+    if url.startswith(prefix):
+        return f'https://{IDF_GITHUB_ASSETS}/' + url[len(prefix):]
+    return url
+
+
+def _extract_tool(archive: Path, target: Path, strip_top: int,
+                  reporter: Reporter) -> None:
+    """解压工具链压缩包
+
+    * ``strip_top=1`` 丢掉最外层那一个目录
+    * **符号链接解引用成真文件** —— Windows 上造不出符号链接，
+      而 tar 里那几个 ``liblto_plugin.so`` 之类是真要用的。
+      （第一版就是在这儿静默丢过东西：``os.path.join`` 在 Windows 上拼出
+      反斜杠，跟 tar 成员名对不上，链接全被跳过。tar 内部路径必须用 posixpath。）
+    """
+    name = archive.name.lower()
+    target.mkdir(parents=True, exist_ok=True)
+
+    if name.endswith('.zip'):
+        with zipfile.ZipFile(archive) as zf:
+            for member in zf.infolist():
+                parts = Path(member.filename).parts[strip_top:]
+                if not parts:
+                    continue
+                out = target.joinpath(*parts)
+                if member.is_dir():
+                    out.mkdir(parents=True, exist_ok=True)
+                else:
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member) as src, open(out, 'wb') as dst:
+                        shutil.copyfileobj(src, dst, 1024 * 512)
+        return
+
+    with tarfile.open(archive) as tf:
+        members = tf.getmembers()
+        by_name = {m.name: m for m in members}
+        for member in members:
+            parts = Path(member.name).parts[strip_top:]
+            if not parts:
+                continue
+            out = target.joinpath(*parts)
+            if member.isdir():
+                out.mkdir(parents=True, exist_ok=True)
+                continue
+            source = _resolve_link(member, by_name)
+            if source is None or not source.isfile():
+                continue
+            out.parent.mkdir(parents=True, exist_ok=True)
+            handle = tf.extractfile(source)
+            if handle is None:
+                continue
+            with handle, open(out, 'wb') as dst:
+                shutil.copyfileobj(handle, dst, 1024 * 512)
+
+
+def _resolve_link(member, by_name):
+    """把链接成员解析成真正的文件成员（链接可能指向另一个链接）"""
+    for _ in range(8):
+        if member.issym():
+            base = posixpath.dirname(member.name)
+            target = posixpath.normpath(posixpath.join(base, member.linkname))
+        elif member.islnk():
+            target = posixpath.normpath(member.linkname)
+        else:
+            return member
+        nxt = by_name.get(target)
+        if nxt is None:
+            return None
+        member = nxt
+    return None
+
+
+def fetch_platform(sandbox: Sandbox, reporter: Reporter, want: str) -> bool:
+    """把**另一个平台**的工具链下好，放在 ``idf_tools-<平台>/``
+
+    官方下载器（idf_tools.py）只会下"当前系统"的包，所以这里自己读
+    ``tools.json`` 里的地址下 —— 走 Espressif 镜像。
+
+    用途：在 Windows 上把 Linux 那套备齐，整个文件夹拷到 Linux 机器就能直接用，
+    不用在那台机器上再下一次。
+    """
+    if want == sandbox.host:
+        reporter.info(f'当前就是 {want}，不需要另外备货')
+        return True
+    if not sandbox.tools_json.is_file():
+        reporter.error('还没有 ESP-IDF 源码（tools.json 在里面），先跑 --download')
+        return False
+
+    key = {'windows': 'win64', 'linux': 'linux-amd64', 'macos': 'macos'}.get(want)
+    if not key:
+        reporter.error(f'不认识的平台：{want}')
+        return False
+
+    try:
+        data = json.loads(sandbox.tools_json.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        reporter.error(f'读不了 tools.json：{exc}')
+        return False
+
+    root = sandbox.root / f'idf_tools-{want}' / 'tools'
+    cache = sandbox.root / 'download'
+    cache.mkdir(parents=True, exist_ok=True)
+
+    wanted = ['xtensa-esp-elf', 'cmake', 'ninja', 'esp-rom-elfs']
+    if want == 'windows':
+        wanted.append('idf-exe')
+
+    reporter.banner(f'给 {want} 备工具链')
+    reporter.line(f'  目标目录：{root}')
+    reporter.line(f'  下载缓存：{cache}（下完就删）')
+    total_bytes = 0
+
+    for tool in data.get('tools', []):
+        name = tool.get('name')
+        if name not in wanted:
+            continue
+        if not tool.get('versions'):
+            continue
+        version = tool['versions'][0]
+        info = version.get(key) or version.get('any')
+        if not info or not info.get('url'):
+            reporter.warn(f'{name} 没有 {want} 版的包，跳过')
+            continue
+        strip = tool.get('strip_container_dirs', 0)
+        target = root / name / version['name']
+        if target.is_dir() and any(target.iterdir()):
+            reporter.info(f'{name} 已经有了，跳过')
+            continue
+
+        url = _mirror(info['url'])
+        archive = cache / os.path.basename(info['url'].split('?')[0])
+        reporter.info(f'{name} {version["name"]}  {url.split("/")[-1]}')
+        try:
+            if not archive.is_file():
+                _download_with_progress(url, archive, reporter)
+            shutil.rmtree(target, ignore_errors=True)
+            _extract_tool(archive, target, strip, reporter)
+            total_bytes += dir_size(target)
+        except Exception as exc:
+            reporter.error(f'{name} 失败：{exc}')
+            return False
+        finally:
+            if archive.is_file():
+                try:
+                    archive.unlink()
+                except OSError:
+                    pass
+
+    # 光有文件不够 —— 得确认里面真的是那个平台的可执行文件
+    gcc = None
+    for path in root.rglob('xtensa-esp32s3-elf-gcc*'):
+        if path.is_file():
+            gcc = path
+            break
+    if gcc is None:
+        reporter.error('下完了但找不到编译器，可能地址变了')
+        return False
+    with open(gcc, 'rb') as fh:
+        magic = fh.read(4)
+    kind = 'windows' if gcc.suffix.lower() == '.exe' else 'linux'
+    if kind != want:
+        reporter.error(f'下下来的居然是 {kind} 版，平台不对')
+        return False
+    reporter.ok(f'{want} 工具链就绪：{human_size(total_bytes)}，'
+                f'编译器格式 {kind}（{"PE/.exe" if kind == "windows" else "ELF"}）')
     return True
 
 
@@ -488,6 +1044,17 @@ def main(argv: list[str] | None = None) -> int:
     code = 0
     try:
         reporter.title('沙箱准备 / 修复')
+
+        # --download 是"在线配置"，直接走它自己的流程，不用先满世界找本机 IDF
+        if args.download:
+            return 0 if online_setup(sandbox, reporter) else 2
+        if args.check:
+            return 0 if self_check(sandbox, reporter) else 1
+        if args.prune:
+            return prune(sandbox, reporter, deep=args.deep, really=args.yes)
+        if args.fetch:
+            return 0 if fetch_platform(sandbox, reporter, args.fetch.lower()) else 2
+
         missing = report_status(sandbox, reporter)
 
         sources: list[Source] = []
@@ -527,17 +1094,7 @@ def main(argv: list[str] | None = None) -> int:
                 reporter.ok('沙箱是完整的，不需要修')
             return code
 
-        if args.download:
-            reporter.banner('从官方渠道下载')
-            if not sandbox.idf_py.is_file():
-                if not download_idf(sandbox, reporter):
-                    return 2
-            if not prepare_python_env(sandbox, reporter):
-                return 2
-            if sandbox.missing_required_tools():
-                if not download_tools(sandbox, reporter):
-                    return 2
-        elif sources and sandbox.host == 'windows':
+        if args.repair and sources and sandbox.host == 'windows':
             reporter.banner('从本机来源补齐')
             for source in sources:
                 if not sandbox.python_exe.is_file():

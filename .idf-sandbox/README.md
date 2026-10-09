@@ -22,6 +22,59 @@ python3 .idf-sandbox/start.py         # 或者 sh .idf-sandbox/start-linux.sh
 所以是"两套并排"而不是"一套通用"。选错会被提前拦住并说清楚原因，
 不会甩出一堆 `Exec format error`。
 
+## 环境从哪来：两种方式
+
+**A. 拷文件夹（离线）** —— `.idf-sandbox/` 里环境是现成的，插上就能用，不联网。
+
+**B. 在线配置** —— 如果这个目录里只有脚本（从 GitHub clone 下来就是这样），
+点图形控制台里的 **「配置沙箱环境」**，或者跑：
+
+```bat
+python .idf-sandbox\start.py prepare --download     :: Windows
+```
+```bash
+python3 .idf-sandbox/start.py prepare --download    # Linux
+```
+
+配套的两个命令（一般用图形界面上的按钮就行）：
+
+```bat
+python .idf-sandbox\start.py prepare --check          :: 自检：每项都真跑一遍
+python .idf-sandbox\start.py prepare --prune          :: 看能清理多少（不删）
+python .idf-sandbox\start.py prepare --prune --yes    :: 真删，腾硬盘
+python .idf-sandbox\start.py prepare --fetch linux    :: 在 Windows 上给 Linux 备好工具链
+```
+
+它会从官方源把缺的东西下齐，**全部落在 `.idf-sandbox/` 里面**：
+
+| 下什么 | 从哪下 | 多大 | 下完留多少 |
+|---|---|---|---|
+| ESP-IDF 5.4.4 源码 | `dl.espressif.com` | 1.9 GB | 357 MB（丢掉 docs/examples） |
+| xtensa 交叉编译器 | `dl.espressif.com` | 250 MB | 1.4 GB |
+| CMake / Ninja / ROM 链接脚本 | `dl.espressif.com` | 55 MB | 120 MB |
+| ESP-IDF 的 Python 依赖 | PyPI | 60 MB | 约 200 MB |
+| esp-sr 语音组件 | `components.espressif.com` | 230 MB | 230 MB |
+
+不装 C 编译器、不改 PATH、不写注册表、不装全局 Python 包。
+不想要了，删掉这个文件夹就干净了。
+
+**下完自动自检**（每一项都真跑一遍，不是只看文件在不在）：
+
+```
+--- 自检 ------------------------------------------------------
+  [OK]   ESP-IDF 源码        5.4.4
+  [OK]   Python 环境         3.14.0
+  [OK]   交叉编译器          xtensa-esp-elf-gcc-14.2.0 ...
+  [OK]   idf.py 端到端       ESP-IDF v5.4.4
+  [OK]   组件依赖            232.7 MB
+  [OK]   自检全部通过 —— 可以点"一键编译烧录"了
+```
+
+单独体检：`prepare --check`。中途断了不要紧，再跑一次会接着下
+（已下好的跳过，压缩包解压完立刻删）。
+
+> Linux 上不打包 Python —— 各发行版都自带 `python3`，直接借它建虚拟环境。
+
 ## 里面有什么
 
 ```

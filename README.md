@@ -261,6 +261,73 @@ tools/build/build.sh                     # Linux
 客户电脑上**不需要装**：C 编译器、CMake、Ninja、ESP-IDF —— 一个都不用。
 Linux 上只需要系统自带的 `python3`（一般都有）。
 
+### 环境怎么来：两种方式
+
+**方式 A：拷文件夹（离线，推荐给客户）**
+
+把整个工程文件夹拷过去，`.idf-sandbox/` 里环境都是现成的，插上就能用，全程不联网。
+
+**方式 B：在线配置（手头只有源码时用）**
+
+从 GitHub 上 clone 下来只有源码和脚本（**没有环境**）。这时候打开图形控制台，
+点一下 **「配置沙箱环境」**：
+
+```
+┌──────────────────────────────────────────────────────┐
+│ 工程  [esp32_smart_home            ▾] [浏览…] [应用]  │
+│ [一键编译烧录] [只编译] [烧录] [看串口] [停止]        │
+│ 串口  [COM31 ▾] [刷新]  波特率 [115200 ▾] □先擦除     │
+│ [配置沙箱环境] [环境体检] [修复沙箱] [清理空间] [WiFi 配置] │
+└──────────────────────────────────────────────────────┘
+```
+
+它会自己从官方源把缺的东西下齐（走 Espressif 国内镜像，实测 5 MB/s）：
+
+| 下载什么 | 从哪下 | 多大 |
+|---|---|---|
+| ESP-IDF 5.4.4 源码 | `dl.espressif.com` | 1.9 GB（解压后只留 357 MB） |
+| xtensa 交叉编译器 | `dl.espressif.com` | 约 250 MB |
+| CMake / Ninja / ROM 链接脚本 | `dl.espressif.com` | 约 55 MB |
+| ESP-IDF 的 Python 依赖 | PyPI | 约 60 MB |
+| esp-sr 语音组件 | `components.espressif.com` | 约 230 MB |
+
+**全部落在 `.idf-sandbox/` 里面** —— 不装 C 编译器、不改 PATH、不写注册表、
+不装全局 Python 包。卸载就是把文件夹删掉，一个字节都不留在系统里。
+
+命令行等价操作：
+
+```bat
+python .idf-sandbox\start.py prepare --download     :: Windows
+```
+```bash
+python3 .idf-sandbox/start.py prepare --download    # Linux
+```
+
+配套的两个命令（一般用图形界面上的按钮就行）：
+
+```bat
+python .idf-sandbox\start.py prepare --check          :: 自检：每项都真跑一遍
+python .idf-sandbox\start.py prepare --prune          :: 看能清理多少（不删）
+python .idf-sandbox\start.py prepare --prune --yes    :: 真删，腾硬盘
+python .idf-sandbox\start.py prepare --fetch linux    :: 在 Windows 上给 Linux 备好工具链
+```
+
+**下完会自己检查**，每一项都真的跑一遍（不是只看文件在不在）：
+
+```
+--- 自检 ------------------------------------------------------
+  [OK]   ESP-IDF 源码        5.4.4
+  [OK]   Python 环境         3.14.0
+  [OK]   交叉编译器          xtensa-esp-elf-gcc-14.2.0 ...
+  [OK]   idf.py 端到端       ESP-IDF v5.4.4
+  [OK]   组件依赖            232.7 MB
+  [OK]   自检全部通过 —— 可以点"一键编译烧录"了
+```
+
+想单独体检也可以：`python .idf-sandbox\start.py prepare --check`。
+
+中途断网/关掉不要紧，**再点一次会接着下**（已经下好的跳过，压缩包下完就删）。
+
 ### 方式一：图形控制台（推荐）
 
 **`start.py` 是整个沙箱的总入口**，所有启动逻辑都写在它里面（自带，不依赖任何东西）：

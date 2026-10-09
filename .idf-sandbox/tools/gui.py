@@ -87,6 +87,7 @@ def show_error_box(title: str, message: str) -> None:
 try:
     import tkinter as tk
     from tkinter import font as tkfont
+    from tkinter import messagebox
     from tkinter import ttk
 except Exception as _exc:                                     # pragma: no cover
     show_error_box('缺少 tkinter', (
@@ -234,6 +235,8 @@ class App:
         except tk.TclError:
             pass
         style.configure('Big.TButton', font=self.f_ui_bold, padding=(int(10 * self.scale), 5))
+        # 「配置沙箱环境」是沙箱空着时的头等大事，给它一点存在感
+        style.configure('Setup.TButton', font=self.f_ui_bold, padding=(int(7 * self.scale), 3))
         style.configure('TButton', font=self.f_ui, padding=(int(6 * self.scale), 3))
         style.configure('TLabel', font=self.f_ui)
         style.configure('TCheckbutton', font=self.f_ui)
@@ -320,8 +323,12 @@ class App:
         # ---- 工具按钮 ----
         row2 = ttk.Frame(outer)
         row2.pack(side='top', fill='x', pady=(6, 0))
-        ttk.Button(row2, text='环境体检', command=self.task_doctor).pack(side='left')
+        self.btn_setup = ttk.Button(row2, text='配置沙箱环境', style='Setup.TButton',
+                                    command=self.task_setup)
+        self.btn_setup.pack(side='left')
+        ttk.Button(row2, text='环境体检', command=self.task_doctor).pack(side='left', padx=(6, 0))
         ttk.Button(row2, text='修复沙箱', command=self.task_repair).pack(side='left', padx=(6, 0))
+        ttk.Button(row2, text='清理空间', command=self.task_prune).pack(side='left', padx=(6, 0))
         ttk.Button(row2, text='WiFi 配置', command=self.open_wifi_config).pack(
             side='left', padx=(6, 0))
         ttk.Button(row2, text='打开日志', command=self.open_logs).pack(side='right')
@@ -697,13 +704,96 @@ class App:
     def task_repair(self):
         self._start('修复沙箱', lambda: self._run_script('prepare.py', ['--repair']))
 
+    def task_setup(self):
+        """在线配置沙箱环境：缺什么下什么，下完自检
+
+        全部下载到 .idf-sandbox/ 里面，不往系统目录写东西。
+        第一次要联网、要等一会儿（大约 2 GB），之后就一直离线可用了。
+        """
+        sandbox = self.sandbox
+        size = self._dir_size(sandbox.root)
+        missing = sandbox.check_essentials()
+        lines = [
+            '这个按钮会联网把沙箱配齐（缺什么下什么，已有的跳过）。',
+            '',
+            f'  当前沙箱：{human_size(size)}',
+            f'  下载到  ：{sandbox.root}',
+            '',
+            '全部放在沙箱目录里，不装到系统、不改 PATH、不动注册表。',
+            '第一次大约要下 2 GB（走 Espressif 国内镜像），之后完全离线。',
+            '中途断了不要紧，再点一次会接着下。',
+        ]
+        if missing:
+            lines.append('')
+            lines.append('现在缺的东西：')
+            for item in missing[:6]:
+                lines.append(f'  · {item.split()[0]}')
+        if not messagebox.askokcancel('配置沙箱环境', '\n'.join(lines)):
+            return
+        self._start('配置沙箱环境',
+                    lambda: self._run_script('prepare.py', ['--download']))
+
+    def task_prune(self):
+        """清理空间：删掉编译产物和另一个平台的工具链
+
+        删的全是"没了也能再弄回来"的东西，所以删完沙箱照样能用。
+        """
+        sandbox = self.sandbox
+        other = 'linux' if sandbox.host == 'windows' else 'windows'
+        targets = [
+            ('编译产物 build/', sandbox.project / 'build'),
+            ('下载缓存 download/', sandbox.root / 'download'),
+            ('日志 logs/', sandbox.root / 'logs'),
+            (f'另一个平台的工具链 idf_tools-{other}/', sandbox.root / f'idf_tools-{other}'),
+        ]
+        lines = ['下面这些会被删掉（都是能重新生成/重新下载的）：', '']
+        freed = 0
+        for label, path in targets:
+            if path.exists():
+                size = self._dir_size(path)
+                freed += size
+                lines.append(f'  · {label}   {human_size(size)}')
+        if not freed:
+            messagebox.showinfo('清理空间', '已经很干净了，没有可删的东西。')
+            return
+        lines += [
+            '',
+            f'合计可以释放 {human_size(freed)}。',
+            '',
+            '删除不影响使用：编译产物下次编译自动重建；',
+            f'另一个平台的工具链要用时这样弄回来：',
+            f'    prepare --fetch {other}',
+        ]
+        if not messagebox.askokcancel('清理空间', '\n'.join(lines)):
+            return
+        self._start('清理空间',
+                    lambda: self._run_script('prepare.py', ['--prune', '--yes']))
+
+    @staticmethod
+    def _dir_size(path) -> int:
+        total = 0
+        try:
+            for root, _dirs, files in os.walk(path):
+                for name in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return total
+
     def _run_script(self, script: str, extra: list) -> int:
         """体检、修复这类脚本直接当子进程跑，输出照样流进窗口"""
         path = Path(__file__).resolve().parent / script
         if not path.is_file():
             self.append(f'找不到脚本：{path}', 'red')
             return 2
-        cmd = [str(self.sandbox.python_exe), str(path), *extra, '--no-pause']
+        # 配置环境要用当前这个解释器（可能就是系统 Python），
+        # 不能用沙箱那个 —— 沙箱 Python 可能正是缺的那一块
+        base = self.sandbox.python_exe
+        python = str(base) if base.is_file() else sys.executable
+        cmd = [python, str(path), *extra, '--no-pause']
         env = self.sandbox.build_env()
         return run_streamed(cmd, env, self.sandbox.project, self.reporter).code
 

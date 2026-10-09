@@ -489,12 +489,37 @@ class Sandbox:
 
     @property
     def idf_version(self) -> str:
-        """完整版本号，例如 5.4.4"""
+        """完整版本号，例如 5.4.4
+
+        优先读 ``version.txt``（git 检出的 IDF 带这个文件）；
+        **从 zip 下载来的源码包没有它** —— 那就去 ``esp_idf_version.h``
+        里把三个数字抠出来。这个不能返回空：``ESP_IDF_VERSION`` 一空，
+        组件管理器会抛 "Version string lacks a numerical component"。
+        """
         try:
-            raw = (self.idf_dir / 'version.txt').read_text(encoding='utf-8', errors='replace').strip()
-            return raw.lstrip('v')
+            raw = (self.idf_dir / 'version.txt').read_text(
+                encoding='utf-8', errors='replace').strip()
+            if raw:
+                # 有的机器上这个文件带 BOM，别让 \ufeff 混进版本号里 ——
+                # 它会让组件管理器的版本比较直接抛异常
+                return raw.lstrip('\ufeff').strip().lstrip('v').strip()
+        except OSError:
+            pass
+
+        header = (self.idf_dir / 'components' / 'esp_common' / 'include'
+                  / 'esp_idf_version.h')
+        try:
+            text = header.read_text(encoding='utf-8', errors='replace')
         except OSError:
             return ''
+        parts = {}
+        for key in ('MAJOR', 'MINOR', 'PATCH'):
+            found = re.search(r'#define\s+ESP_IDF_VERSION_' + key + r'\s+(\d+)', text)
+            if found:
+                parts[key] = found.group(1)
+        if len(parts) == 3:
+            return f'{parts["MAJOR"]}.{parts["MINOR"]}.{parts["PATCH"]}'
+        return ''
 
     @property
     def idf_version_short(self) -> str:
@@ -658,17 +683,20 @@ class Sandbox:
 
         先看平台对不对 —— 在 Linux 上打开一个 Windows 沙箱，缺的东西会列一长串，
         但真正的原因只有一个，先说清楚那个。
+
+        注意 Python 有**两种活法**，有一个就行：
+          * 沙箱自带了便携 Python（`python/`）—— 拷来的完整沙箱
+          * 用这台电脑的系统 Python 建了虚拟环境（`penv*/`）—— 在线配置的沙箱
         """
         problem = self.platform_problem()
         if problem:
             return [problem]
 
         missing = []
-        if self.host == 'windows' and not self.python_exe.is_file():
-            # Linux/macOS 不打包 Python，用系统自带的那份
-            missing.append(f'便携 Python        {self.python_exe}')
         if not self.idf_py.is_file():
-            missing.append(f'ESP-IDF            {self.idf_py}')
+            missing.append(f'ESP-IDF 源码        {self.idf_py}')
+        if not self.python_exe.is_file() and not self.venv_python.is_file():
+            missing.append(f'Python 环境         {self.venv_dir}（点"配置沙箱环境"自动装）')
         for name in self.missing_required_tools():
             missing.append(f'工具链 {name:<12} {self.idf_tools_dir / "tools" / name}')
         return missing
@@ -737,6 +765,13 @@ class Sandbox:
         env['PYTHONPATH'] = ''
         env['TERM'] = env.get('TERM', 'xterm-256color')
 
+        # 官方下载器（idf_tools.py）默认直连 github.com —— 国内经常超时，
+        # cmake 那次三次重试全部 10060。这个变量让它改走 Espressif 的镜像
+        # （Google 一下 IDF_GITHUB_ASSETS 就是干这个的），实测快十倍。
+        # 用户自己设过就不覆盖。
+        if not env.get('IDF_GITHUB_ASSETS'):
+            env['IDF_GITHUB_ASSETS'] = 'dl.espressif.com/github_assets'
+
         env['PATH'] = os.pathsep.join(path_parts + [env.get('PATH', '')])
 
         # 临时目录也搬进沙箱。有些电脑（公司电脑、装了杀毒软件的）不让往系统 %TEMP% 写，
@@ -776,15 +811,15 @@ def ensure_venv(sandbox: Sandbox, reporter: Reporter | None = None) -> Path:
     """
     say = reporter or Reporter(color=False)
     base_python = sandbox.python_exe
-    if not base_python.is_file() and sandbox.host != 'windows':
-        # Linux/macOS 没打包 Python 时，用当前这个解释器当母体
+    if not base_python.is_file():
+        # 没有便携 Python —— 在线配置的沙箱就是这样，用当前这个解释器当母体。
+        # （在线配置的前提就是这台电脑有 Python，否则 start.py 根本跑不起来）
         base_python = Path(sys.executable)
 
     if not base_python.is_file():
         raise SandboxError(
-            f'沙箱自带的 Python 不见了：{sandbox.python_exe}\n'
-            f'（{sandbox.host} 版）跑一次修复试试：'
-            f'python {sandbox.root / "start.py"} prepare --download')
+            f'找不到可用的 Python：{sandbox.python_exe}\n'
+            f'跑一次在线配置试试：python {sandbox.root / "start.py"} prepare --download')
 
     # 非 Windows 上不在这儿"空手"建环境 —— 那需要联网装依赖，
     # 交给 prepare.py 干（start.py 通常已经自动跑过了）

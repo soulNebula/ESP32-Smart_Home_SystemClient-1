@@ -480,13 +480,13 @@ def check_tools(plat):
 
 
 def ensure_python_env(plat, task):
-    """Linux 上第一次跑：自动把 Python 环境准备好
+    """第一次跑：没有 Python 环境就先自动准备好
 
-    Windows 侧的环境是整个拷过来的，直接能用；Linux 侧得建个虚拟环境再把
-    ESP-IDF 的依赖装上（只有第一次要联网，之后完全离线）。
+    拷来的完整沙箱里什么都有，直接能用；**在线配置**的沙箱只有脚本，
+    Python 环境要现建（建 venv + 装 ESP-IDF 依赖，只有第一次要联网）。
     与其让用户先去敲一条 prepare，不如这里顺手做掉 —— 他点一下就该能跑。
     """
-    if plat == 'windows' or task in ('prepare', 'doctor'):
+    if task in ('prepare', 'doctor'):
         return True
     if os.path.isfile(venv_python(plat)):
         return True
@@ -503,12 +503,12 @@ def ensure_python_env(plat, task):
                                 'prepare', '--download'])
     except Exception as exc:
         say('准备 Python 环境失败：%s\n\n手动跑一次看详细报错：\n'
-            '    python3 .idf-sandbox/start.py prepare --download' % exc)
+            '    python .idf-sandbox\\start.py prepare --download' % exc)
         return False
     if code != 0 or not os.path.isfile(venv_python(plat)):
         say('Python 环境还没准备好。\n\n'
             '最常见的原因是没联网。手动跑一次看详细报错：\n'
-            '    python3 .idf-sandbox/start.py prepare --download')
+            '    python .idf-sandbox\\start.py prepare --download')
         return False
     return True
 
