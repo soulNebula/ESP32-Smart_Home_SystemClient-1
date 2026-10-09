@@ -44,8 +44,7 @@ typedef struct {
 } adkey_logic_cfg_t;
 
 // 看电压认是哪个键
-static inline int adkey_logic_match(int mv, int idle_mv, const adkey_logic_cfg_t *cfg)
-{
+static inline int adkey_logic_match(int mv, int idle_mv, const adkey_logic_cfg_t *cfg) {
     // 跟空闲挨着算没按
     if (mv < 0 || mv >= idle_mv - cfg->ok_margin) {
         return ADKEY_LOGIC_NONE;

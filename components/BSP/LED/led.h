@@ -60,9 +60,6 @@ esp_err_t led_flush(void);
 // 分区号换英文名
 const char *led_zone_name(led_zone_t zone);
 
-// 英文名反查分区号
-led_zone_t led_zone_from_name(const char *name);
-
 // 板载状态灯
 esp_err_t led_status_set(led_status_t st);
 esp_err_t led_status_rgb(uint8_t r, uint8_t g, uint8_t b);

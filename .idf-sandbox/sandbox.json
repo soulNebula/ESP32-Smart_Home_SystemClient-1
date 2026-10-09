@@ -1,0 +1,23 @@
+﻿{
+    "generated":  "2026-10-10 01:44:02",
+    "purpose":  "本工程专用的绿色编译环境：便携 Python + ESP-IDF + xtensa 工具链 + Tcl/Tk 图形界面",
+    "idf_version":  "v5.4.4",
+    "target":  "esp32s3",
+    "python_version":  "3.11.2",
+    "gui":  {
+                "toolkit":  "tkinter (Tcl/Tk 8.6)",
+                "bundled":  true,
+                "note":  "Espressif 便携 Python 没带 tkinter，已从官方 3.11 同 ABI 构建补齐",
+                "tcl_version":  "8.6"
+            },
+    "python_compat":  "3.9 ~ 3.14（tools/sandbox/*.py 全部实测通过）",
+    "tools":  {
+                  "xtensa-esp-elf":  "esp-14.2.0_20260121",
+                  "cmake":  "3.30.2",
+                  "ninja":  "1.12.1",
+                  "esp-rom-elfs":  "20241011",
+                  "idf-exe":  "1.0.3"
+              },
+    "size_bytes":  2055877960,
+    "size_human":  "1.91 GB"
+}

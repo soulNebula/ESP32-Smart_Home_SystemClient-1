@@ -196,31 +196,27 @@ static const uint8_t pic_about[120] = {
 };
 
 // 把图标转成数组
-static std::vector<uint8_t> pic(const uint8_t *p)
-{
+static std::vector<uint8_t> pic(const uint8_t *p) {
     return std::vector<uint8_t>(p, p + 120);
 }
 
 // 量这段字多宽
 
-static float textWidth(const std::string &_text)
-{
+static float textWidth(const std::string &_text) {
     // 接口要非只读串
     std::string t = _text;
     return (float)HAL::getFontWidth(t);
 }
 
 // 造个开机主页
-HomePage::HomePage(std::string _title) : astra::Menu(std::move(_title))
-{
+HomePage::HomePage(std::string _title) : astra::Menu(std::move(_title)) {
     // 这页自己画
     hideSelector = true;
     openableWhenEmpty = true;
 }
 
 // 画主页四行文字
-void HomePage::render(std::vector<float> _camera)
-{
+void HomePage::render(std::vector<float> _camera) {
     // 这页不跟镜头动
     (void)_camera;
     Item::updateConfig();
@@ -251,21 +247,18 @@ void HomePage::render(std::vector<float> _camera)
                      netStr);
 }
 
-TitleListPage::TitleListPage(std::string _title) : astra::Menu(std::move(_title))
-{
+TitleListPage::TitleListPage(std::string _title) : astra::Menu(std::move(_title)) {
     // 顶栏占一行
     clipTop = astra::getUIConfig().listLineHeight;
 }
 
 TitleListPage::TitleListPage(std::string _title, std::vector<uint8_t> _pic)
-    : astra::Menu(std::move(_title), std::move(_pic))
-{
+    : astra::Menu(std::move(_title), std::move(_pic)) {
     clipTop = astra::getUIConfig().listLineHeight;
 }
 
 // 画顶栏和列表
-void TitleListPage::render(std::vector<float> _camera)
-{
+void TitleListPage::render(std::vector<float> _camera) {
     // 空页面兜个底
     if (child.empty()) {
         astra::Menu::render(_camera);
@@ -287,13 +280,11 @@ void TitleListPage::render(std::vector<float> _camera)
     HAL::setDrawType(1);
 }
 
-SelfTestPage::SelfTestPage(std::string _title) : TitleListPage(std::move(_title))
-{
+SelfTestPage::SelfTestPage(std::string _title) : TitleListPage(std::move(_title)) {
 }
 
 // 把 OK 转给 glue
-bool SelfTestPage::onOkKey()
-{
+bool SelfTestPage::onOkKey() {
     if (g_selftest_ok_cb != nullptr) {
         g_selftest_ok_cb(selectIndex);
     }
@@ -302,44 +293,38 @@ bool SelfTestPage::onOkKey()
 }
 
 // 进页面开自检
-void SelfTestPage::onEnter()
-{
+void SelfTestPage::onEnter() {
     if (g_selftest_enter_cb != nullptr) {
         g_selftest_enter_cb();
     }
 }
 
 // 离开就停自检
-void SelfTestPage::onExit()
-{
+void SelfTestPage::onExit() {
     if (g_selftest_exit_cb != nullptr) {
         g_selftest_exit_cb();
     }
 }
 
-DevicePage::DevicePage(std::string _title) : TitleListPage(std::move(_title))
-{
+DevicePage::DevicePage(std::string _title) : TitleListPage(std::move(_title)) {
 }
 
 // 把 OK 转给 glue
-bool DevicePage::onOkKey()
-{
+bool DevicePage::onOkKey() {
     if (g_device_ok_cb != nullptr) {
         g_device_ok_cb(selectIndex);
     }
     return true;
 }
 
-SensorPage::SensorPage(std::string _title) : astra::Menu(std::move(_title))
-{
+SensorPage::SensorPage(std::string _title) : astra::Menu(std::move(_title)) {
     // 这页自己画
     hideSelector = true;
     openableWhenEmpty = true;
 }
 
 // 画四行文字
-void SensorPage::render(std::vector<float> _camera)
-{
+void SensorPage::render(std::vector<float> _camera) {
     (void)_camera;
     Item::updateConfig();
     HAL::setDrawType(1);
@@ -376,13 +361,11 @@ void SensorPage::render(std::vector<float> _camera)
     }
 }
 
-AutoPage::AutoPage(std::string _title) : TitleListPage(std::move(_title))
-{
+AutoPage::AutoPage(std::string _title) : TitleListPage(std::move(_title)) {
 }
 
 // 切联动总开关
-bool AutoPage::onOkKey()
-{
+bool AutoPage::onOkKey() {
     if (selectIndex == 0 && g_auto_ok_cb != nullptr) {
         // 只有第一行响应
         g_auto_ok_cb();
@@ -392,8 +375,7 @@ bool AutoPage::onOkKey()
 }
 
 AboutPage::AboutPage(std::string _title, std::vector<uint8_t> _pic)
-    : TitleListPage(std::move(_title), std::move(_pic))
-{
+    : TitleListPage(std::move(_title), std::move(_pic)) {
 }
 
 // 把界面搭起来

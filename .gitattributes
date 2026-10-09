@@ -1,0 +1,10 @@
+# Linux 下的 shell 脚本必须是 LF，防止被 Windows 工具转成 CRLF
+*.sh   text eol=lf executable
+*.bash text eol=lf executable
+
+# Windows 批处理必须是 CRLF：那些"双击入口"的 .cmd 靠它才稳
+*.cmd  text eol=crlf
+
+# patch 也不要被改行尾
+*.patch text eol=lf
+*.diff  text eol=lf

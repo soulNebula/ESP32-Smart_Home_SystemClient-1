@@ -65,12 +65,6 @@ esp_err_t voice_init(void);
 // 登记上层的回话口
 esp_err_t voice_register_cb(voice_cmd_cb_t cb, void *user_data);
 
-// 发一段字让模块念
-esp_err_t voice_speak(const char *text);
-
-// 报温度湿度
-esp_err_t voice_speak_temp(float temp, float humi);
-
 // 自己造一条命令
 esp_err_t voice_inject_cmd(voice_cmd_t cmd);
 
@@ -79,9 +73,6 @@ const char *voice_cmd_name(voice_cmd_t cmd);
 
 // 名字翻回命令号
 voice_cmd_t voice_cmd_from_name(const char *name);
-
-// 看模块还接着没
-bool voice_is_online(void);
 
 #ifdef __cplusplus
 }

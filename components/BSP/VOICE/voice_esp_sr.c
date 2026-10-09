@@ -1,3 +1,5 @@
+// ESP-SR 离线语音识别
+
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -16,8 +18,6 @@
 #include "voice_esp_sr.h"
 // 认出的命令从这走
 #include "voice_internal.h"
-
-#if CONFIG_APP_VOICE_SOURCE_ESP_SR
 
 // 识别用的头文件
 #include "esp_afe_config.h"
@@ -41,7 +41,7 @@
     !defined(CONFIG_SR_WN_WN9_NIHAOMIAOBAN_TTS2) && !defined(CONFIG_SR_WN_WN8_HILEXIN) && \
     !defined(CONFIG_SR_WN_WN8_HIESP) && !defined(CONFIG_SR_WN_WN8_ALEXA) && \
     !defined(CONFIG_SR_WN_WN9_ALEXA)
-#error "已打开 CONFIG_APP_VOICE_SOURCE_ESP_SR，但没有选择任何【唤醒词模型】。请运行 idf.py menuconfig → 'ESP Speech Recognition' → 'Load Multiple Wake Words (WakeNet9s)'，勾选一个（推荐 你好小智 / wn9s_nihaoxiaozhi）。"
+#error "已启用 ESP-SR，但没有选择任何【唤醒词模型】请运行 idf.py menuconfig → 'ESP Speech Recognition' → 'Load Multiple Wake Words (WakeNet9s)'，勾选一个（推荐 你好小智 / wn9s_nihaoxiaozhi）"
 #endif
 
 #if !defined(CONFIG_SR_MN_CN_MULTINET5_RECOGNITION_QUANT8) && \
@@ -49,7 +49,7 @@
     !defined(CONFIG_SR_MN_CN_MULTINET7_QUANT) && \
     !defined(CONFIG_SR_MN_CN_MULTINET7_AC_QUANT) && \
     !defined(CONFIG_SR_MN_CN_MULTINET6_AC_QUANT)
-#error "已打开 CONFIG_APP_VOICE_SOURCE_ESP_SR，但没有选择任何【中文命令词模型】。请运行 idf.py menuconfig → 'ESP Speech Recognition' → 'Chinese Speech Commands Model'，勾选一个（推荐 general chinese recognition / mn7_cn）。"
+#error "已启用 ESP-SR，但没有选择任何【中文命令词模型】请运行 idf.py menuconfig → 'ESP Speech Recognition' → 'Chinese Speech Commands Model'，勾选一个（推荐 general chinese recognition / mn7_cn）"
 #endif
 
 
@@ -160,8 +160,7 @@ static model_iface_data_t   *s_mn_data = NULL;
 static int16_t *s_feed_buf = NULL;
 
 // 挑出要用的模型
-static esp_err_t voice_sr_pick_models(void)
-{
+static esp_err_t voice_sr_pick_models(void) {
     if (s_models == NULL) {
         ESP_LOGE(TAG, "模型列表为空，无法挑选模型");
         return ESP_ERR_INVALID_STATE;
@@ -213,14 +212,13 @@ static esp_err_t voice_sr_pick_models(void)
         strncpy(s_wake_word, "(未知，看模型名)", sizeof(s_wake_word) - 1);
     }
 
-    ESP_LOGI(TAG, "★ 唤醒词模型 = %s   要喊的词 = 「%s」", s_wn_name, s_wake_word);
-    ESP_LOGI(TAG, "★ 命令词模型 = %s", s_mn_name);
+    ESP_LOGI(TAG, "唤醒词模型 = %s   要喊的词 = 「%s」", s_wn_name, s_wake_word);
+    ESP_LOGI(TAG, "命令词模型 = %s", s_mn_name);
     return ESP_OK;
 }
 
 // 把命令词交上去
-static esp_err_t voice_sr_register_commands(void)
-{
+static esp_err_t voice_sr_register_commands(void) {
     if (s_mn == NULL || s_mn_data == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -294,16 +292,14 @@ static volatile uint32_t s_diag_detect_n    = 0;
 voice_ui_note_t g_voice_ui_note = { 0, { 0 } };
 
 // 写一条屏幕提示
-void voice_ui_note(const char *text)
-{
+void voice_ui_note(const char *text) {
     // 先写字再立旗
     snprintf(g_voice_ui_note.text, sizeof(g_voice_ui_note.text), "%s", text);
     g_voice_ui_note.pending = 1;
 }
 
 // 命令翻中文说法
-static const char *voice_sr_cmd_cn(voice_cmd_t cmd)
-{
+static const char *voice_sr_cmd_cn(voice_cmd_t cmd) {
     for (size_t i = 0; i < VOICE_SR_CMD_NUM; i++) {
         if (s_cmds[i].cmd == cmd) {
             return s_cmds[i].cn;
@@ -313,8 +309,7 @@ static const char *voice_sr_cmd_cn(voice_cmd_t cmd)
 }
 
 // 专门喂声音的任务
-static void voice_sr_feed_task(void *arg)
-{
+static void voice_sr_feed_task(void *arg) {
     (void)arg;
 
     // 先等麦克风稳一稳
@@ -362,8 +357,8 @@ static void voice_sr_feed_task(void *arg)
             if (now - last_zero_warn_us > 30LL * 1000 * 1000) {
                 last_zero_warn_us = now;
                 ESP_LOGW(TAG, "连续收到全 0 音频帧 %u 个（I²S SD 脚可能是低电平）："
-                              "麦克风没接？串口敲 `mic` 看实时电平。"
-                              "此告警每 30 秒最多一条。", (unsigned)s_st_zero);
+                              "麦克风没接？串口敲 `mic` 看实时电平"
+                              "此告警每 30 秒最多一条", (unsigned)s_st_zero);
             }
         }
 
@@ -386,8 +381,7 @@ static void voice_sr_feed_task(void *arg)
 }
 
 // 等数据认话交出去
-static void voice_sr_task(void *arg)
-{
+static void voice_sr_task(void *arg) {
     (void)arg;
 
     ESP_LOGI(TAG, "识别任务已启动：先喊「%s」，等日志出现『已唤醒』后再说命令词", s_wake_word);
@@ -504,7 +498,7 @@ static void voice_sr_task(void *arg)
             if (!s_awake) {
                 s_awake = true;
                 // 喊醒了得让人知道
-                ESP_LOGI(TAG, "★ 已唤醒（唤醒词=「%s」）—— 请说命令词，%d 秒内有效",
+                ESP_LOGI(TAG, "已唤醒（唤醒词=「%s」）—— 请说命令词，%d 秒内有效",
                          s_wake_word, VOICE_SR_MN_DURATION_MS / 1000);
                 voice_ui_note("已唤醒，请说命令");
             }
@@ -560,15 +554,14 @@ static void voice_sr_task(void *arg)
 }
 
 // 把整套识别拉起来
-esp_err_t voice_esp_sr_start(void)
-{
+esp_err_t voice_esp_sr_start(void) {
     if (s_started) {
         // 开过就直接走
         return ESP_OK;
     }
 
     ESP_LOGI(TAG, "=========== 启动 ESP-SR 离线语音识别（INMP441 I²S）===========");
-    ESP_LOGI(TAG, "⚠ INMP441 是 I²S 不是 I²C：SCK=GPIO%d / WS=GPIO%d / SD=GPIO%d / "
+    ESP_LOGI(TAG, " INMP441 是 I²S 不是 I²C：SCK=GPIO%d / WS=GPIO%d / SD=GPIO%d / "
                   "L-R=GND / VDD=3V3",
              (int)BSP_I2S_MIC_SCK_GPIO, (int)BSP_I2S_MIC_WS_GPIO, (int)BSP_I2S_MIC_SD_GPIO);
 
@@ -587,7 +580,7 @@ esp_err_t voice_esp_sr_start(void)
     // 把模型读出来
     s_models = esp_srmodel_init("model");
     if (s_models == NULL) {
-        ESP_LOGE(TAG, "esp_srmodel_init(\"model\") 失败：model 分区没找到或没烧模型。"
+        ESP_LOGE(TAG, "esp_srmodel_init(\"model\") 失败：model 分区没找到或没烧模型"
                       "检查分区表里是否有 `model` 分区，以及烧录时是否带了 model 镜像"
                       "（idf.py flash 会自动烧 srmodels.bin）");
         return ESP_ERR_NOT_FOUND;
@@ -707,7 +700,7 @@ esp_err_t voice_esp_sr_start(void)
     s_started = true;
     s_ready   = true;
     ESP_LOGI(TAG, "=========== ESP-SR 启动成功 ===========");
-    ESP_LOGI(TAG, "★ 请喊：「%s」，然后说命令词（如「打开客厅灯」）", s_wake_word);
+    ESP_LOGI(TAG, "请喊：「%s」，然后说命令词（如「打开客厅灯」）", s_wake_word);
     ESP_LOGI(TAG, "   完整命令词表：串口敲 voice-test");
     ESP_LOGI(TAG, "   剩余内部堆 %u 字节 / PSRAM 剩余 %u 字节",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -716,32 +709,27 @@ esp_err_t voice_esp_sr_start(void)
 }
 
 // 看识别起来没
-bool voice_esp_sr_is_ready(void)
-{
+bool voice_esp_sr_is_ready(void) {
     return s_ready;
 }
 
 // 看在不在等命令
-bool voice_esp_sr_is_awake(void)
-{
+bool voice_esp_sr_is_awake(void) {
     return s_awake;
 }
 
 // 报要喊那句话
-const char *voice_esp_sr_wake_word(void)
-{
+const char *voice_esp_sr_wake_word(void) {
     return s_wake_word[0] ? s_wake_word : "(未启动)";
 }
 
 // 报命令词模型
-const char *voice_esp_sr_mn_model(void)
-{
+const char *voice_esp_sr_mn_model(void) {
     return (s_mn_name != NULL) ? s_mn_name : "(未加载)";
 }
 
 // 把命令表打出来
-void voice_esp_sr_print_commands(void)
-{
+void voice_esp_sr_print_commands(void) {
     printf("\n");
     printf("============ ESP-SR 离线语音识别 —— 命令词表 ============\n");
     printf("  唤醒词： 「%s」   （必须先喊它，听到日志 \"已唤醒\" 再说命令）\n",
@@ -757,60 +745,7 @@ void voice_esp_sr_print_commands(void)
                voice_cmd_name(s_cmds[i].cmd));
     }
     printf("-------------------------------------------------------\n");
-    printf("  ⚠ 本方案只有麦克风、没有喇叭：控制类指令正常执行；\n");
-    printf("    查询类指令（温度多少/播报全部…）会走完业务链路但【不会出声】。\n");
+    printf("   本方案只有麦克风、没有喇叭：控制类指令正常执行；\n");
+    printf("    查询类指令（温度多少/播报全部…）会走完业务链路但【不会出声】\n");
     printf("=======================================================\n\n");
 }
-
-// !CONFIG_APP_VOICE_SOURCE_ESP_SR
-#else
-
-// 开关关着时全是空壳
-
-// 没开就直说
-esp_err_t voice_esp_sr_start(void)
-{
-    return ESP_ERR_NOT_SUPPORTED;
-}
-
-voice_ui_note_t g_voice_ui_note = { 0, { 0 } };
-
-// 没开就什么都不写
-void voice_ui_note(const char *text)
-{
-    // 没事件可提示
-    (void)text;
-}
-
-// 没开就是没就绪
-bool voice_esp_sr_is_ready(void)
-{
-    return false;
-}
-
-// 没开就不会醒
-bool voice_esp_sr_is_awake(void)
-{
-    return false;
-}
-
-// 没开就没有唤醒词
-const char *voice_esp_sr_wake_word(void)
-{
-    return "(ESP-SR 未启用)";
-}
-
-// 没开就没有模型
-const char *voice_esp_sr_mn_model(void)
-{
-    return "(ESP-SR 未启用)";
-}
-
-// 没开就提示一句
-void voice_esp_sr_print_commands(void)
-{
-    printf("\n  当前固件未启用 ESP-SR（menuconfig → 应用行为 → 语音识别来源）。\n"
-           "  现在用的是 ASRPRO UART 方案：say <voice_cmd> 可模拟，help-voice 看指令表。\n\n");
-}
-
-#endif

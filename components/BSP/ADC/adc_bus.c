@@ -1,3 +1,5 @@
+// ADC驱动
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -47,8 +49,7 @@ static bool s_cali_valid = false;
 static bool s_inited = false;
 
 // 建单元并配好通道
-static esp_err_t adc_bus_setup_unit_and_channels(void)
-{
+static esp_err_t adc_bus_setup_unit_and_channels(void) {
     if (s_unit == NULL) {
         // 时钟源用默认
         const adc_oneshot_unit_init_cfg_t unit_cfg = {
@@ -111,8 +112,7 @@ static esp_err_t adc_bus_setup_unit_and_channels(void)
 }
 
 // 建校准，失败也不报错
-static void adc_bus_setup_calibration(void)
-{
+static void adc_bus_setup_calibration(void) {
     s_cali = NULL;
     s_cali_valid = false;
 
@@ -144,8 +144,7 @@ static void adc_bus_setup_calibration(void)
 }
 
 // 把采样单元准备好
-esp_err_t adc_bus_init(void)
-{
+esp_err_t adc_bus_init(void) {
     // 起过就返回
     if (s_inited) {
         return ESP_OK;
@@ -176,8 +175,7 @@ esp_err_t adc_bus_init(void)
 }
 
 // 读一路的原始值
-esp_err_t adc_bus_read_raw(adc_channel_t ch, int *out_raw)
-{
+esp_err_t adc_bus_read_raw(adc_channel_t ch, int *out_raw) {
     if (out_raw == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -225,8 +223,7 @@ esp_err_t adc_bus_read_raw(adc_channel_t ch, int *out_raw)
 }
 
 // 读一路的电压
-esp_err_t adc_bus_read_mv(adc_channel_t ch, int *out_mv)
-{
+esp_err_t adc_bus_read_mv(adc_channel_t ch, int *out_mv) {
     if (out_mv == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -254,8 +251,7 @@ esp_err_t adc_bus_read_mv(adc_channel_t ch, int *out_mv)
 }
 
 // 多读几次取平均
-int adc_bus_read_mv_avg(adc_channel_t ch, int samples)
-{
+int adc_bus_read_mv_avg(adc_channel_t ch, int samples) {
     if (samples <= 0) {
         samples = ADC_AVG_SAMPLES_DEFAULT;
     } else if (samples > ADC_AVG_SAMPLES_MAX) {

@@ -1,4 +1,4 @@
-# ESP32-S3-WROOM-1-N16R8 (16MB Flash) 分区表
+# 分区表
 
 #  Name,     Type, SubType,  Offset,   Size,     Flags
 nvs,        data, nvs,      0x9000,   0x6000,

@@ -29,9 +29,6 @@ extern "C" {
 
 // 拼主题的几个口子
 
-// 拼出基础主题
-esp_err_t mqtt_topic_base(char *buf, size_t len);
-
 // 拼出状态主题
 esp_err_t mqtt_topic_state(char *buf, size_t len);
 

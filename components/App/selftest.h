@@ -1,6 +1,7 @@
 #pragma once
 
-#include "adkey.h"
+#include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,9 +16,6 @@ void selftest_enter(void);
 // 退自检，把联动放回去
 void selftest_exit(void);
 
-// 键盘按键进来
-void selftest_on_adkey(adkey_id_t id, adkey_event_t ev);
-
 // 每半秒推进一下状态
 void selftest_tick(void);
 
@@ -26,9 +24,6 @@ void selftest_run_current(void);
 
 // 翻到下一项
 void selftest_next(void);
-
-// 翻到上一项
-void selftest_prev(void);
 
 #ifdef __cplusplus
 }

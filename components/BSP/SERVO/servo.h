@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #include "esp_err.h"
 #include "board_config.h"
 
@@ -48,6 +50,9 @@ esp_err_t servo_attach(servo_id_t id);
 
 // 舵机号换名字
 const char *servo_name(servo_id_t id);
+
+// 这路舵机接没接（写死停用的返回 false）
+bool servo_is_enabled(servo_id_t id);
 
 // 名字反查舵机号
 servo_id_t servo_from_name(const char *name);

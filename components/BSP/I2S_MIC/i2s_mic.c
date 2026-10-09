@@ -1,3 +1,6 @@
+// I²S 麦克风驱动
+// 采样率 16KHz，单声道，16bit
+
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,8 +56,7 @@ static i2s_mic_level_t s_level;
 static int32_t s_raw[I2S_MIC_RAW_CHUNK];
 
 // 整数开平方
-static uint32_t isqrt_u32(uint32_t x)
-{
+static uint32_t isqrt_u32(uint32_t x) {
     if (x == 0) {
         return 0;
     }
@@ -78,8 +80,7 @@ static uint32_t isqrt_u32(uint32_t x)
 }
 
 // 整数算对数
-static int32_t log2_q8(uint32_t v)
-{
+static int32_t log2_q8(uint32_t v) {
     if (v == 0) {
         // 零上面已经挡过
         return INT32_MIN;
@@ -117,8 +118,7 @@ typedef struct {
 } mic_stat_t;
 
 // 把统计清零
-static void mic_stat_reset(mic_stat_t *st)
-{
+static void mic_stat_reset(mic_stat_t *st) {
     st->min    = INT32_MAX;
     st->max    = INT32_MIN;
     st->sum    = 0;
@@ -128,8 +128,7 @@ static void mic_stat_reset(mic_stat_t *st)
 }
 
 // 转成十六位并记账
-static void i2s_mic_accumulate(const int32_t *raw, size_t n, mic_stat_t *st, int16_t *out)
-{
+static void i2s_mic_accumulate(const int32_t *raw, size_t n, mic_stat_t *st, int16_t *out) {
     for (size_t i = 0; i < n; i++) {
         // 右移取高位
         int32_t v = (int32_t)(raw[i] >> I2S_MIC_RAW_SHIFT);
@@ -162,8 +161,7 @@ static void i2s_mic_accumulate(const int32_t *raw, size_t n, mic_stat_t *st, int
 }
 
 // 算大小和分贝
-static void i2s_mic_level_update(const mic_stat_t *st, size_t samples)
-{
+static void i2s_mic_level_update(const mic_stat_t *st, size_t samples) {
     if (samples == 0) {
         // 没读到就只记次数
         s_level.read_count++;
@@ -194,8 +192,7 @@ static void i2s_mic_level_update(const mic_stat_t *st, size_t samples)
 }
 
 // 把麦克风通道打开
-esp_err_t i2s_mic_init(void)
-{
+esp_err_t i2s_mic_init(void) {
     // 开过就不再重开
     if (s_inited) {
         return ESP_OK;
@@ -277,8 +274,7 @@ esp_err_t i2s_mic_init(void)
 }
 
 // 读一段单声道采样
-esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t timeout_ms)
-{
+esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t timeout_ms) {
     if (out_read != NULL) {
         *out_read = 0;
     }
@@ -379,8 +375,7 @@ esp_err_t i2s_mic_read(int16_t *buf, size_t samples, size_t *out_read, uint32_t 
     return (err == ESP_OK) ? ESP_ERR_TIMEOUT : err;
 }
 
-void i2s_mic_read_level(i2s_mic_level_t *out)
-{
+void i2s_mic_read_level(i2s_mic_level_t *out) {
     if (out == NULL) {
         return;
     }
@@ -389,8 +384,7 @@ void i2s_mic_read_level(i2s_mic_level_t *out)
 }
 
 // 看麦克风在不在
-bool i2s_mic_is_ready(void)
-{
+bool i2s_mic_is_ready(void) {
     if (!s_inited || s_rx_chan == NULL) {
         return false;
     }
@@ -403,8 +397,7 @@ bool i2s_mic_is_ready(void)
 }
 
 // 采一段打印统计
-void i2s_mic_dump(int seconds)
-{
+void i2s_mic_dump(int seconds) {
     if (!s_inited || s_rx_chan == NULL) {
         printf("  [mic] I²S 未初始化，先确认 i2s_mic_init() 的日志\n");
         return;

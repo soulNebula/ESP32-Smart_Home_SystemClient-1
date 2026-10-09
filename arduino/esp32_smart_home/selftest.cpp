@@ -1,0 +1,215 @@
+// ======================================================================
+// 自检：一项一项验过去，验完把设备收好，联动放回原样
+//
+// 对应 ESP-IDF 工程的 components/App/selftest.c。
+// 项表、每项跑几拍、进出和切项的动作都照抄，只是日志换成 Serial.printf。
+// 自检期间自动联动先摁住，免得这边开灯那边又给关了。
+// ======================================================================
+
+#include "selftest.h"
+
+#include <Arduino.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "board_config.h"
+
+#include "automation.h"
+#include "device_model.h"
+#include "sensor.h"
+
+// 日志前缀，和原版 ESP-IDF 的 TAG 对齐
+static const char *TAG = "SELFTEST";
+
+// 主循环半秒一拍，项表里的拍数都是按这个算的
+#define TEST_TICK_MS        500
+
+// 一个测试项长这样
+typedef struct {
+    // 屏幕上显示的名字
+    const char *name;
+    // 开跑时干什么
+    void      (*start)(void);
+    // 收尾时把设备还原
+    void      (*finish)(void);
+    // 跑几拍，零就马上完
+    uint8_t    run_ticks;
+} test_item_t;
+
+// 每项的开和收，动作一律走 SRC_SELFTEST，日志里看得出是自检按的
+static void t_led_living(void)  { device_set_power(DEV_LED_LIVING, true, SRC_SELFTEST); }
+static void t_led_living_end(void)  { device_set_power(DEV_LED_LIVING, false, SRC_SELFTEST); }
+static void t_led_kitchen(void) { device_set_power(DEV_LED_KITCHEN, true, SRC_SELFTEST); }
+static void t_led_kitchen_end(void) { device_set_power(DEV_LED_KITCHEN, false, SRC_SELFTEST); }
+static void t_led_bedroom(void) { device_set_power(DEV_LED_BEDROOM, true, SRC_SELFTEST); }
+static void t_led_bedroom_end(void) { device_set_power(DEV_LED_BEDROOM, false, SRC_SELFTEST); }
+static void t_led_bath(void)    { device_set_power(DEV_LED_BATH, true, SRC_SELFTEST); }
+static void t_led_bath_end(void)    { device_set_power(DEV_LED_BATH, false, SRC_SELFTEST); }
+static void t_fan(void)         { device_set_level(DEV_FAN, 60, SRC_SELFTEST); }
+static void t_fan_end(void)     { device_set_power(DEV_FAN, false, SRC_SELFTEST); }
+// 一半就是九十度（窗户和门关三十度、开一百五十度）
+static void t_window(void)      { device_set_level(DEV_WINDOW, 50, SRC_SELFTEST); }
+static void t_window_end(void)  { device_set_level(DEV_WINDOW, 0, SRC_SELFTEST); }
+static void t_door(void)        { device_set_level(DEV_DOOR, 50, SRC_SELFTEST); }
+static void t_door_end(void)    { device_set_level(DEV_DOOR, 0, SRC_SELFTEST); }
+#if BSP_SERVO_CURTAIN_ENABLE
+static void t_curtain(void)     { device_set_level(DEV_CURTAIN, 50, SRC_SELFTEST); }
+static void t_curtain_end(void) { device_set_level(DEV_CURTAIN, 0, SRC_SELFTEST); }
+#endif
+
+// 一共九项
+#define TEST_ITEM_COUNT         9
+// 末项是看读数
+#define TEST_IDX_SENSOR         (TEST_ITEM_COUNT - 1)
+
+static const test_item_t s_items[TEST_ITEM_COUNT] = {
+    // 亮两秒
+    { "客厅灯", t_led_living,  t_led_living_end,  4 },
+    { "厨房灯", t_led_kitchen, t_led_kitchen_end, 4 },
+    { "卧室灯", t_led_bedroom, t_led_bedroom_end, 4 },
+    { "浴室灯", t_led_bath,    t_led_bath_end,    4 },
+    // 转两秒六成风
+    { "风扇",   t_fan,         t_fan_end,         4 },
+    // 转过去停会儿再回
+    { "窗户",   t_window,      t_window_end,      3 },
+    { "门",     t_door,        t_door_end,        3 },
+#if BSP_SERVO_CURTAIN_ENABLE
+    { "窗帘",   t_curtain,     t_curtain_end,     3 },
+#else
+    // 窗帘舵机写死不要了，占着位子马上过
+    { "窗帘(停用)", NULL,      NULL,              0 },
+#endif
+    // 只看读数，屏幕上会画出来
+    { "传感器", NULL,          NULL,              0 },
+};
+
+static bool     s_active    = false;
+// 进来之前联动是开是关
+static bool     s_prev_auto = true;
+static uint8_t  s_idx       = 0;
+// 三步直接用头文件里的 selftest_phase_t，别再造一个
+static selftest_phase_t s_phase = SELFTEST_PHASE_IDLE;
+// 这一项跑了几拍
+static uint16_t s_elapsed   = 0;
+
+bool selftest_is_active(void) {
+    return s_active;
+}
+
+void selftest_enter(void) {
+    if (s_active) {
+        return;
+    }
+
+    s_active    = true;
+    s_prev_auto = automation_is_enabled();
+    // 自检时先摁住联动，不然刚开的灯马上被自动规则关掉
+    automation_set_enabled(false);
+    s_idx       = 0;
+    s_phase     = SELFTEST_PHASE_IDLE;
+    s_elapsed   = 0;
+
+    Serial.printf("%s: selftest mode ON (auto paused, was %s)\n",
+                  TAG, s_prev_auto ? "on" : "off");
+}
+
+void selftest_exit(void) {
+    if (!s_active) {
+        return;
+    }
+
+    // 走之前先把设备收好
+    const test_item_t *it = &s_items[s_idx];
+    if (s_phase == SELFTEST_PHASE_RUN && it->finish != NULL) {
+        it->finish();
+    }
+
+    // 把联动恢复原样
+    automation_set_enabled(s_prev_auto);
+    s_active = false;
+
+    Serial.printf("%s: selftest mode OFF (auto restored to %s)\n",
+                  TAG, s_prev_auto ? "on" : "off");
+    // 屏幕下一拍自己会刷
+}
+
+void selftest_run_current(void) {
+    if (!s_active) {
+        return;
+    }
+
+    const test_item_t *it = &s_items[s_idx];
+
+    // 重跑前先收个尾
+    if (s_phase == SELFTEST_PHASE_RUN && it->finish != NULL) {
+        it->finish();
+    }
+
+    s_phase   = SELFTEST_PHASE_RUN;
+    s_elapsed = 0;
+
+    if (it->start != NULL) {
+        it->start();
+    }
+    Serial.printf("%s: run item %d/%d: %s\n", TAG, (int)s_idx + 1, TEST_ITEM_COUNT, it->name);
+}
+
+void selftest_next(void) {
+    if (!s_active) {
+        return;
+    }
+
+    const test_item_t *it = &s_items[s_idx];
+    if (s_phase == SELFTEST_PHASE_RUN && it->finish != NULL) {
+        // 切走前先收尾
+        it->finish();
+    }
+
+    s_idx     = (uint8_t)((s_idx + 1) % TEST_ITEM_COUNT);
+    s_phase   = SELFTEST_PHASE_IDLE;
+    s_elapsed = 0;
+
+    Serial.printf("%s: item %d/%d: %s\n", TAG, (int)s_idx + 1, TEST_ITEM_COUNT, s_items[s_idx].name);
+}
+
+void selftest_tick(void) {
+    if (!s_active) {
+        return;
+    }
+
+    if (s_phase == SELFTEST_PHASE_RUN) {
+        const test_item_t *it = &s_items[s_idx];
+        s_elapsed++;
+        if (s_elapsed >= it->run_ticks) {
+            if (it->finish != NULL) {
+                it->finish();
+            }
+            s_phase = SELFTEST_PHASE_DONE;
+            Serial.printf("%s: item %s done\n", TAG, it->name);
+        }
+    }
+}
+
+uint8_t selftest_get_count(void) {
+    return TEST_ITEM_COUNT;
+}
+
+uint8_t selftest_get_index(void) {
+    return s_idx;
+}
+
+uint8_t selftest_get_phase(void) {
+    return (uint8_t)s_phase;
+}
+
+const char *selftest_get_item_name(uint8_t idx) {
+    return (idx < TEST_ITEM_COUNT) ? s_items[idx].name : "";
+}
+
+void selftest_run_index(uint8_t idx) {
+    if (!s_active || idx >= TEST_ITEM_COUNT) {
+        return;
+    }
+    s_idx = idx;
+    selftest_run_current();
+}

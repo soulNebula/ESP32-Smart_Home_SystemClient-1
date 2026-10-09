@@ -17,8 +17,7 @@ static const char *TAG = "mqtt_protocol";
 #define MQTT_BASE_MAX  64
 
 // 取这台板的号
-static esp_err_t build_uid(char *buf, size_t len)
-{
+static esp_err_t build_uid(char *buf, size_t len) {
     int n;
 
     if (buf == NULL) {
@@ -43,8 +42,7 @@ static esp_err_t build_uid(char *buf, size_t len)
 }
 
 // 拼出前缀加号
-static esp_err_t build_base(char *buf, size_t len)
-{
+static esp_err_t build_base(char *buf, size_t len) {
     char uid[MQTT_UID_MAX] = { 0 };
     esp_err_t err;
     int n;
@@ -68,8 +66,7 @@ static esp_err_t build_base(char *buf, size_t len)
 }
 
 // 前缀号再接尾巴
-static esp_err_t build_topic(char *buf, size_t len, const char *suffix)
-{
+static esp_err_t build_topic(char *buf, size_t len, const char *suffix) {
     char base[MQTT_BASE_MAX] = { 0 };
     esp_err_t err;
     int n;
@@ -97,62 +94,47 @@ static esp_err_t build_topic(char *buf, size_t len, const char *suffix)
     return ESP_OK;
 }
 
-// 拼出基础主题
-esp_err_t mqtt_topic_base(char *buf, size_t len)
-{
-    return build_topic(buf, len, NULL);
-}
-
 // 拼出状态主题
-esp_err_t mqtt_topic_state(char *buf, size_t len)
-{
+esp_err_t mqtt_topic_state(char *buf, size_t len) {
     return build_topic(buf, len, "/state");
 }
 
 // 拼出测量主题
-esp_err_t mqtt_topic_sensor(char *buf, size_t len)
-{
+esp_err_t mqtt_topic_sensor(char *buf, size_t len) {
     return build_topic(buf, len, "/sensor");
 }
 
 // 拼出在线主题
-esp_err_t mqtt_topic_availability(char *buf, size_t len)
-{
+esp_err_t mqtt_topic_availability(char *buf, size_t len) {
     return build_topic(buf, len, "/availability");
 }
 
 // 拼出回执主题
-esp_err_t mqtt_topic_ack(char *buf, size_t len)
-{
+esp_err_t mqtt_topic_ack(char *buf, size_t len) {
     return build_topic(buf, len, "/ack");
 }
 
 // 拼出事件主题
-esp_err_t mqtt_topic_event(char *buf, size_t len)
-{
+esp_err_t mqtt_topic_event(char *buf, size_t len) {
     return build_topic(buf, len, "/event");
 }
 
 // 拼出命令主题
-esp_err_t mqtt_topic_cmd(char *buf, size_t len)
-{
+esp_err_t mqtt_topic_cmd(char *buf, size_t len) {
     return build_topic(buf, len, "/cmd");
 }
 
 // 拼出命令通配主题
-esp_err_t mqtt_topic_cmd_wildcard(char *buf, size_t len)
-{
+esp_err_t mqtt_topic_cmd_wildcard(char *buf, size_t len) {
     return build_topic(buf, len, "/cmd/#");
 }
 
 // 拼出阈值主题
-esp_err_t mqtt_topic_config(char *buf, size_t len)
-{
+esp_err_t mqtt_topic_config(char *buf, size_t len) {
     return build_topic(buf, len, "/config");
 }
 
 // 拼出查询主题
-esp_err_t mqtt_topic_get(char *buf, size_t len)
-{
+esp_err_t mqtt_topic_get(char *buf, size_t len) {
     return build_topic(buf, len, "/get");
 }

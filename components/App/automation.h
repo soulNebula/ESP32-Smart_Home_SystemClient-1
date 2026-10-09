@@ -67,6 +67,10 @@ void automation_notify_manual(device_id_t id);
 // 手动之后歇多久不碰
 #define AUTO_MANUAL_GUARD_MS  60000
 
+// 雨停重开的迟滞带：关窗按 rain_pct 阈值，重开要再干这么多才动
+// 免得小雨在阈值附近反复开关窗
+#define AUTO_RAIN_REOPEN_HYST_PCT  10.0f
+
 #ifdef __cplusplus
 }
 #endif

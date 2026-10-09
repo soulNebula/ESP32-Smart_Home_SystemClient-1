@@ -59,8 +59,7 @@ static char s_last_pub_config[512] = { 0 };
 static char s_topic_get[TOPIC_BUF_LEN]          = { 0 };
 
 // 按长度安全拷贝
-static bool copy_bounded(char *dst, size_t dst_size, const char *src, int src_len)
-{
+static bool copy_bounded(char *dst, size_t dst_size, const char *src, int src_len) {
     if (dst == NULL || dst_size == 0 || src == NULL || src_len <= 0) {
         return false;
     }
@@ -73,8 +72,7 @@ static bool copy_bounded(char *dst, size_t dst_size, const char *src, int src_le
 }
 
 // 看主题尾巴对不对
-static bool topic_endswith(const char *topic, int topic_len, const char *suffix)
-{
+static bool topic_endswith(const char *topic, int topic_len, const char *suffix) {
     size_t sl;
 
     if (topic == NULL || suffix == NULL || topic_len <= 0) {
@@ -88,8 +86,7 @@ static bool topic_endswith(const char *topic, int topic_len, const char *suffix)
 }
 
 // 认出命令主题
-static bool topic_is_cmd(const char *topic, int topic_len)
-{
+static bool topic_is_cmd(const char *topic, int topic_len) {
     size_t cl;
 
     if (topic == NULL || topic_len <= 0) {
@@ -106,8 +103,7 @@ static bool topic_is_cmd(const char *topic, int topic_len)
 }
 
 // 解析命令
-void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src)
-{
+void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src) {
     char json[RX_BUF_LEN];
     char dev[DEV_NAME_MAX] = { 0 };
     char action[ACTION_MAX] = { 0 };
@@ -299,8 +295,7 @@ void app_cmd_handle_json(const char *payload, int payload_len, ctrl_source_t src
 }
 
 // 解析阈值配置
-void app_cmd_handle_config_json(const char *payload, int payload_len, ctrl_source_t src)
-{
+void app_cmd_handle_config_json(const char *payload, int payload_len, ctrl_source_t src) {
     char json[RX_BUF_LEN];
     cJSON *root;
     const cJSON *item = NULL;
@@ -364,8 +359,7 @@ void app_cmd_handle_config_json(const char *payload, int payload_len, ctrl_sourc
 }
 
 // 看主题分给谁处理
-static void handle_message(const char *topic, int topic_len, const char *data, int data_len)
-{
+static void handle_message(const char *topic, int topic_len, const char *data, int data_len) {
     if (topic == NULL || topic_len <= 0) {
         ESP_LOGW(TAG, "message without topic, ignored");
         return;
@@ -390,8 +384,7 @@ static void handle_message(const char *topic, int topic_len, const char *data, i
 }
 
 // 上报一遍设备状态
-esp_err_t mqtt_publish_state(void)
-{
+esp_err_t mqtt_publish_state(void) {
     // 改用堆，省栈防崩
     char *snap = (char *)malloc(SNAP_BUF_LEN);
     char ip[16] = "0.0.0.0";
@@ -448,8 +441,7 @@ esp_err_t mqtt_publish_state(void)
 }
 
 // 上报一遍测量数据
-esp_err_t mqtt_publish_sensor(const sensor_data_t *d)
-{
+esp_err_t mqtt_publish_sensor(const sensor_data_t *d) {
     cJSON *root;
     char *json;
 
@@ -490,8 +482,7 @@ esp_err_t mqtt_publish_sensor(const sensor_data_t *d)
 }
 
 // 上报一遍阈值设置
-esp_err_t mqtt_publish_config(void)
-{
+esp_err_t mqtt_publish_config(void) {
     char buf[512];
     int n;
 
@@ -513,8 +504,7 @@ esp_err_t mqtt_publish_config(void)
 }
 
 // 回一条执行结果
-esp_err_t mqtt_publish_ack(const char *what, bool ok, const char *detail)
-{
+esp_err_t mqtt_publish_ack(const char *what, bool ok, const char *detail) {
     cJSON *root;
     char *json;
 
@@ -540,8 +530,7 @@ esp_err_t mqtt_publish_ack(const char *what, bool ok, const char *detail)
 }
 
 // 报一次本地事件
-esp_err_t mqtt_publish_event(const char *what)
-{
+esp_err_t mqtt_publish_event(const char *what) {
     cJSON *root;
     char *json;
 
@@ -565,14 +554,12 @@ esp_err_t mqtt_publish_event(const char *what)
 }
 
 // 看这条链路通不通
-static bool mqtt_link_is_connected(void)
-{
+static bool mqtt_link_is_connected(void) {
     return s_connected;
 }
 
 // 按类型挑主题发
-static esp_err_t mqtt_link_send(app_msg_type_t type, const char *json, size_t len)
-{
+static esp_err_t mqtt_link_send(app_msg_type_t type, const char *json, size_t len) {
     const char *topic  = NULL;
     int         qos    = 0;
     int         retain = 0;
@@ -611,14 +598,12 @@ static const app_link_t s_mqtt_link = {
 };
 
 // 看现在连上没有
-bool mqtt_is_connected(void)
-{
+bool mqtt_is_connected(void) {
     return s_connected;
 }
 
 // 设备一变就上报
-static void device_changed_cb(device_id_t id, ctrl_source_t src, void *user_data)
-{
+static void device_changed_cb(device_id_t id, ctrl_source_t src, void *user_data) {
     (void)user_data;
 
     // 几个任务都会调
@@ -629,16 +614,14 @@ static void device_changed_cb(device_id_t id, ctrl_source_t src, void *user_data
 }
 
 // 挂上状态变化回调
-esp_err_t mqtt_app_bind_device_events(void)
-{
+esp_err_t mqtt_app_bind_device_events(void) {
     // 这个位置只留一个
     return device_register_cb(device_changed_cb, NULL);
 }
 
 // 管连接和收数据
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
-                               int32_t event_id, void *event_data)
-{
+                               int32_t event_id, void *event_data) {
     esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
     esp_mqtt_client_handle_t client = (event != NULL) ? event->client : s_client;
 
@@ -716,8 +699,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     } while (0)
 
 // 起服务，可重复调
-esp_err_t mqtt_app_start(void)
-{
+esp_err_t mqtt_app_start(void) {
     esp_mqtt_client_config_t cfg = { 0 };
     char uid[32] = { 0 };
     esp_err_t err;

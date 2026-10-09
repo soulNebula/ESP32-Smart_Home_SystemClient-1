@@ -1,4 +1,5 @@
 // UI框架与智能家居业务之间通信层
+// C++
 
 #include <cstdio>
 #include <cstring>
@@ -68,7 +69,6 @@ static void device_ok_cb(int itemIndex) {
     device_toggle(devs[itemIndex], SRC_LOCAL_KEY);
 }
 
-// 刷新自动控制页面的动态数据
 static void auto_ok_cb(void) {
     const bool now = !automation_is_enabled();
     automation_set_enabled(now);
@@ -76,9 +76,8 @@ static void auto_ok_cb(void) {
     ESP_LOGI(TAG, "auto mode -> %s (by adkey)", now ? "ON" : "OFF");
 }
 
-// 刷新设备页面的动态数据
 static const char *const s_dev_cn[UI_DEVICE_ITEMS] = {
-    "客厅灯", "厨房灯", "卧室灯", "浴室灯", "风扇", "窗户", "门", "窗帘",
+    "客厅灯", "厨房灯", "卧室灯", "浴室灯", "风扇", "窗户", "门", "窗帘(停用)",
 };
 
 // 刷新各页面的动态数据

@@ -1,3 +1,6 @@
+// 传感器驱动
+// 采样温湿度、光照、雨滴
+
 #include "sensor.h"
 
 #include <stdbool.h>
@@ -24,6 +27,8 @@ static const char *TAG = "SENSOR";
 // 可调参数都放这里
 // 平滑系数，越小越迟钝
 #define SENSOR_FILTER_ALPHA         0.30f
+// 雨滴单独更快的系数：下雨关窗要快
+#define SENSOR_RAIN_FILTER_ALPHA    0.60f
 // 多采几次取平均
 #define SENSOR_ADC_SAMPLES          16
 // 默认多久采一次
@@ -122,8 +127,7 @@ static size_t            s_dev_cache_num;
 
 // 几个小工具函数
 // 把数值夹在上下限内
-static float clampf(float v, float lo, float hi)
-{
+static float clampf(float v, float lo, float hi) {
     if (v < lo) {
         return lo;
     }
@@ -134,18 +138,16 @@ static float clampf(float v, float lo, float hi)
 }
 
 // 慢速平滑，去掉跳动
-static float lowpass(float old, float raw, bool *ready)
-{
+static float lowpass(float old, float raw, bool *ready, float alpha) {
     if (!*ready) {
         *ready = true;
         return raw;
     }
-    return old + SENSOR_FILTER_ALPHA * (raw - old);
+    return old + alpha * (raw - old);
 }
 
 // 按情况等一小会儿
-static void sensor_delay_ms(uint32_t ms)
-{
+static void sensor_delay_ms(uint32_t ms) {
     if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
         vTaskDelay(pdMS_TO_TICKS(ms));
     } else {
@@ -154,20 +156,17 @@ static void sensor_delay_ms(uint32_t ms)
 }
 
 // 加锁防抢
-static void sensor_lock(void)
-{
+static void sensor_lock(void) {
     portENTER_CRITICAL(&s_data_mux);
 }
 
 // 开锁
-static void sensor_unlock(void)
-{
+static void sensor_unlock(void) {
     portEXIT_CRITICAL(&s_data_mux);
 }
 
 // 算校验值查错
-static uint8_t crc8_sensirion(const uint8_t *data, size_t len)
-{
+static uint8_t crc8_sensirion(const uint8_t *data, size_t len) {
     uint8_t crc = 0xFF;
     for (size_t i = 0; i < len; i++) {
         crc ^= data[i];
@@ -181,8 +180,7 @@ static uint8_t crc8_sensirion(const uint8_t *data, size_t len)
 // 读写 I2C 芯片
 
 // 按地址取芯片句柄
-static esp_err_t i2c_dev_get(uint8_t dev_addr, i2c_master_dev_handle_t *out_handle)
-{
+static esp_err_t i2c_dev_get(uint8_t dev_addr, i2c_master_dev_handle_t *out_handle) {
     if (out_handle == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -229,8 +227,7 @@ static esp_err_t i2c_dev_get(uint8_t dev_addr, i2c_master_dev_handle_t *out_hand
 }
 
 // 给芯片写命令
-static esp_err_t i2c_write(uint8_t dev_addr, const uint8_t *buf, size_t len)
-{
+static esp_err_t i2c_write(uint8_t dev_addr, const uint8_t *buf, size_t len) {
     if (buf == NULL || len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -243,8 +240,7 @@ static esp_err_t i2c_write(uint8_t dev_addr, const uint8_t *buf, size_t len)
 }
 
 // 从芯片读数据
-static esp_err_t i2c_read(uint8_t dev_addr, uint8_t *buf, size_t len)
-{
+static esp_err_t i2c_read(uint8_t dev_addr, uint8_t *buf, size_t len) {
     if (buf == NULL || len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -257,8 +253,7 @@ static esp_err_t i2c_read(uint8_t dev_addr, uint8_t *buf, size_t len)
 }
 
 // 读 SHT30 的温度湿度
-static esp_err_t sht30_read(float *out_temp, float *out_rh)
-{
+static esp_err_t sht30_read(float *out_temp, float *out_rh) {
     // 叫它测一次
     const uint8_t cmd[2] = {
         (uint8_t)(SHT30_CMD_MEAS_HI >> 8),
@@ -294,8 +289,7 @@ static esp_err_t sht30_read(float *out_temp, float *out_rh)
 }
 
 // 让 AHT20 先校准
-static esp_err_t aht20_begin(void)
-{
+static esp_err_t aht20_begin(void) {
     const uint8_t cmd[3] = {AHT20_CMD_INIT, AHT20_ARG_INIT, AHT20_ARG_0};
     esp_err_t err = i2c_write(BSP_I2C_ADDR_AHT20, cmd, sizeof(cmd));
     if (err != ESP_OK) {
@@ -307,8 +301,7 @@ static esp_err_t aht20_begin(void)
 }
 
 // 读 AHT20 的温度湿度
-static esp_err_t aht20_read(float *out_temp, float *out_rh)
-{
+static esp_err_t aht20_read(float *out_temp, float *out_rh) {
     const uint8_t cmd[3] = {AHT20_CMD_MEAS, AHT20_ARG_MEAS, AHT20_ARG_0};
     esp_err_t err = i2c_write(BSP_I2C_ADDR_AHT20, cmd, sizeof(cmd));
     if (err != ESP_OK) {
@@ -348,8 +341,7 @@ static esp_err_t aht20_read(float *out_temp, float *out_rh)
 }
 
 // 把 BH1750 打开
-static esp_err_t bh1750_begin(void)
-{
+static esp_err_t bh1750_begin(void) {
     uint8_t cmd = BH1750_CMD_POWER_ON;
     esp_err_t err = i2c_write(BSP_I2C_ADDR_BH1750, &cmd, 1);
     if (err != ESP_OK) {
@@ -367,8 +359,7 @@ static esp_err_t bh1750_begin(void)
 }
 
 // 读 BH1750 的亮度
-static esp_err_t bh1750_read(float *out_lux)
-{
+static esp_err_t bh1750_read(float *out_lux) {
     uint8_t buf[2] = {0};
     esp_err_t err = i2c_read(BSP_I2C_ADDR_BH1750, buf, sizeof(buf));
     if (err != ESP_OK) {
@@ -383,8 +374,7 @@ static esp_err_t bh1750_read(float *out_lux)
 // 读光敏电阻的电压
 
 // 电压换成亮度百分比
-static float light_mv_to_pct(int mv)
-{
+static float light_mv_to_pct(int mv) {
     float pct = ((float)mv - LIGHT_MV_DARK) * 100.0f / (LIGHT_MV_BRIGHT - LIGHT_MV_DARK);
     pct = clampf(pct, 0.0f, 100.0f);
     // 接反了就翻过来
@@ -395,27 +385,23 @@ static float light_mv_to_pct(int mv)
 }
 
 // 百分比换等效亮度值
-static float light_pct_to_eq_lux(float pct)
-{
+static float light_pct_to_eq_lux(float pct) {
     return pct * pct / 100.0f * LIGHT_EQ_LUX_GAIN;
 }
 
 // 真实亮度换成百分比
-static float lux_to_pct(float lux)
-{
+static float lux_to_pct(float lux) {
     return clampf(lux * 100.0f / LIGHT_EQ_LUX_FULL, 0.0f, 100.0f);
 }
 
 // 电压换成下雨百分比
-static float rain_mv_to_pct(int mv)
-{
+static float rain_mv_to_pct(int mv) {
     float pct = (RAIN_MV_DRY - (float)mv) * 100.0f / (RAIN_MV_DRY - RAIN_MV_WET);
     return clampf(pct, 0.0f, 100.0f);
 }
 
 // 自己找一遍配件
-static void sensor_redetect(void)
-{
+static void sensor_redetect(void) {
     // 缺件警告只打一次
     static bool s_th_missing_warned = false;
 
@@ -465,8 +451,7 @@ static void sensor_redetect(void)
 }
 
 // 开机把传感器备好
-esp_err_t sensor_init(void)
-{
+esp_err_t sensor_init(void) {
     if (s_inited) {
         // 开过就直接返回
         return ESP_OK;
@@ -512,8 +497,7 @@ esp_err_t sensor_init(void)
     return ESP_OK;
 }
 
-esp_err_t sensor_read(sensor_data_t *out)
-{
+esp_err_t sensor_read(sensor_data_t *out) {
     if (!s_inited) {
         // 没开过机就先开机
         esp_err_t err = sensor_init();
@@ -547,8 +531,8 @@ esp_err_t sensor_read(sensor_data_t *out)
             }
             s_temp_fail = 0;
             d.valid_temp = true;
-            d.temperature = lowpass(d.temperature, t, &s_filt_temp_ready);
-            d.humidity    = lowpass(d.humidity, rh, &s_filt_hum_ready);
+            d.temperature = lowpass(d.temperature, t, &s_filt_temp_ready, SENSOR_FILTER_ALPHA);
+            d.humidity    = lowpass(d.humidity, rh, &s_filt_hum_ready, SENSOR_FILTER_ALPHA);
         } else if (err != ESP_ERR_INVALID_CRC && err != ESP_ERR_NOT_FINISHED) {
             // 这两种错不算掉线
             s_temp_fail++;
@@ -581,7 +565,7 @@ esp_err_t sensor_read(sensor_data_t *out)
                 lux_raw = 0.0f;
             }
             d.light_is_bh1750 = true;
-            d.lux = lowpass(d.lux, lux_raw, &s_filt_lux_ready);
+            d.lux = lowpass(d.lux, lux_raw, &s_filt_lux_ready, SENSOR_FILTER_ALPHA);
             // 拿真实亮度算百分比
             d.light_pct = lux_to_pct(d.lux);
         } else {
@@ -604,7 +588,7 @@ esp_err_t sensor_read(sensor_data_t *out)
     if (!s_light_bh1750) {
         if (light_mv >= 0) {
             float pct = light_mv_to_pct(light_mv);
-            d.light_pct = lowpass(d.light_pct, pct, &s_filt_pct_ready);
+            d.light_pct = lowpass(d.light_pct, pct, &s_filt_pct_ready, SENSOR_FILTER_ALPHA);
             // 百分比折成亮度值
             d.lux = light_pct_to_eq_lux(d.light_pct);
         }
@@ -615,7 +599,8 @@ esp_err_t sensor_read(sensor_data_t *out)
     int rain_mv = adc_bus_read_mv_avg(BSP_ADC_CH_RAIN, SENSOR_ADC_SAMPLES);
     if (rain_mv >= 0) {
         d.rain_mv = rain_mv;
-        d.rain_pct = lowpass(d.rain_pct, rain_mv_to_pct(rain_mv), &s_filt_rain_ready);
+        d.rain_pct = lowpass(d.rain_pct, rain_mv_to_pct(rain_mv), &s_filt_rain_ready,
+                             SENSOR_RAIN_FILTER_ALPHA);
         // 先按默认值初判
         d.rain_detected = (d.rain_pct > (float)BSP_DEF_RAIN_PCT);
     } else {
@@ -646,14 +631,12 @@ esp_err_t sensor_read(sensor_data_t *out)
     return ESP_OK;
 }
 
-const sensor_data_t *sensor_get_last(void)
-{
+const sensor_data_t *sensor_get_last(void) {
     // 这里的数据永远在
     return &s_data;
 }
 
-esp_err_t sensor_register_cb(sensor_cb_t cb, void *user_data)
-{
+esp_err_t sensor_register_cb(sensor_cb_t cb, void *user_data) {
     // 传空就是取消登记
     s_cb = cb;
     s_cb_user = user_data;
@@ -661,8 +644,7 @@ esp_err_t sensor_register_cb(sensor_cb_t cb, void *user_data)
 }
 
 // 定时采样的常驻任务
-static void sensor_auto_task(void *arg)
-{
+static void sensor_auto_task(void *arg) {
     (void)arg;
     ESP_LOGI(TAG, "自动采样任务启动，周期 %u ms", (unsigned)s_period_ms);
 
@@ -672,8 +654,7 @@ static void sensor_auto_task(void *arg)
     }
 }
 
-esp_err_t sensor_start_auto(uint32_t period_ms)
-{
+esp_err_t sensor_start_auto(uint32_t period_ms) {
     if (period_ms == 0) {
         period_ms = SENSOR_DEF_PERIOD_MS;
     }
@@ -698,8 +679,7 @@ esp_err_t sensor_start_auto(uint32_t period_ms)
     return ESP_OK;
 }
 
-esp_err_t sensor_stop_auto(void)
-{
+esp_err_t sensor_stop_auto(void) {
     TaskHandle_t task = s_task;
     if (task == NULL) {
         // 没在跑就返回
@@ -721,8 +701,7 @@ esp_err_t sensor_stop_auto(void)
 }
 
 // 拼一行给人看的字
-void sensor_format_line(const sensor_data_t *d, char *buf, size_t len)
-{
+void sensor_format_line(const sensor_data_t *d, char *buf, size_t len) {
     if (buf == NULL || len == 0) {
         return;
     }

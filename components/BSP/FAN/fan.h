@@ -22,9 +22,6 @@ esp_err_t fan_set_power(bool on);
 
 bool fan_get_power(void);
 
-// 读转速没接就零
-uint32_t fan_get_rpm(void);
-
 #ifdef __cplusplus
 }
 #endif

@@ -1,3 +1,5 @@
+// 按键驱动
+
 #include <stdbool.h>
 
 #include "freertos/FreeRTOS.h"
@@ -59,22 +61,19 @@ static void    *s_cb_user;
 static bool     s_inited;
 
 // 这个电平算按下吗
-static inline bool key_level_is_pressed(int level)
-{
+static inline bool key_level_is_pressed(int level) {
     return (level == BSP_KEY_ACTIVE_LEVEL);
 }
 
 // 把事件报给上层
-static void key_emit(key_id_t id, key_event_t ev)
-{
+static void key_emit(key_id_t id, key_event_t ev) {
     if (s_cb != NULL) {
         s_cb(id, ev, s_cb_user);
     }
 }
 
 // 看一遍两个键
-static void key_scan_once(void)
-{
+static void key_scan_once(void) {
     const int64_t now_us = esp_timer_get_time();
 
     for (int i = 0; i < BSP_KEY_COUNT; i++) {
@@ -141,8 +140,7 @@ static void key_scan_once(void)
 }
 
 // 反复看按键的任务
-static void key_scan_task(void *arg)
-{
+static void key_scan_task(void *arg) {
     (void)arg;
 
     ESP_LOGI(TAG, "scan task start: period=%dms, debounce=%dms(%d samples), long=%dms",
@@ -158,8 +156,7 @@ static void key_scan_task(void *arg)
 }
 
 // 把按键准备好
-esp_err_t key_init(void)
-{
+esp_err_t key_init(void) {
     if (s_inited) {
         // 来过就直接返回
         return ESP_OK;
@@ -224,8 +221,7 @@ esp_err_t key_init(void)
 }
 
 // 登记按键回调
-esp_err_t key_register_cb(key_cb_t cb, void *user_data)
-{
+esp_err_t key_register_cb(key_cb_t cb, void *user_data) {
     if (cb == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -236,8 +232,7 @@ esp_err_t key_register_cb(key_cb_t cb, void *user_data)
 }
 
 // 查现在按着没有
-bool key_is_pressed(key_id_t id)
-{
+bool key_is_pressed(key_id_t id) {
     if ((int)id < 0 || (int)id >= BSP_KEY_COUNT) {
         return false;
     }

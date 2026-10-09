@@ -1,3 +1,5 @@
+// 舵机驱动
+
 #include "servo.h"
 
 #include <math.h>
@@ -58,14 +60,23 @@ static const char *const s_servo_name[SERVO_MAX] = { "curtain", "window", "door"
 static bool s_inited = false;
 
 // 判断舵机号合不合法
-static bool servo_id_valid(servo_id_t id)
-{
+static bool servo_id_valid(servo_id_t id) {
     return ((int)id >= 0) && (id < SERVO_MAX);
 }
 
+// 这路舵机是不是写死停用了
+static bool servo_is_disabled(servo_id_t id) {
+#if !BSP_SERVO_CURTAIN_ENABLE
+    // 窗帘那路不要了
+    return (id == SERVO_CURTAIN);
+#else
+    (void)id;
+    return false;
+#endif
+}
+
 // 把角度卡在范围内
-static float servo_clamp_deg(float deg)
-{
+static float servo_clamp_deg(float deg) {
     if (deg < SERVO_DEG_MIN) {
         return SERVO_DEG_MIN;
     }
@@ -75,9 +86,31 @@ static float servo_clamp_deg(float deg)
     return deg;
 }
 
+// 这路舵机的关位角度：窗户和门两头都留了余量
+static float servo_closed_deg(servo_id_t id) {
+    switch (id) {
+    case SERVO_WINDOW:
+    case SERVO_DOOR:
+        return (float)BSP_SERVO_WINDOW_DOOR_CLOSED_DEG;
+    default:
+        // 窗帘那路停用了，用不上
+        return SERVO_DEG_MIN;
+    }
+}
+
+// 这路舵机的开位角度
+static float servo_open_deg(servo_id_t id) {
+    switch (id) {
+    case SERVO_WINDOW:
+    case SERVO_DOOR:
+        return (float)BSP_SERVO_WINDOW_DOOR_OPEN_DEG;
+    default:
+        return SERVO_DEG_MAX;
+    }
+}
+
 // 角度换成脉宽
-static uint32_t servo_angle_to_pulse_us(float deg)
-{
+static uint32_t servo_angle_to_pulse_us(float deg) {
     const float span = (float)(BSP_SERVO_MAX_PULSE_US - BSP_SERVO_MIN_PULSE_US);
     const float pulse = (float)BSP_SERVO_MIN_PULSE_US + span * servo_clamp_deg(deg) / 180.0f;
     // 加半点算四舍五入
@@ -85,20 +118,22 @@ static uint32_t servo_angle_to_pulse_us(float deg)
 }
 
 // 脉宽换成占空比
-static uint32_t servo_pulse_to_duty(uint32_t pulse_us)
-{
+static uint32_t servo_pulse_to_duty(uint32_t pulse_us) {
     return (uint32_t)((uint64_t)pulse_us * (uint64_t)SERVO_FULL_SCALE / (uint64_t)SERVO_PERIOD_US);
 }
 
 // 角度直接换成占空比
-static uint32_t servo_angle_to_duty(float deg)
-{
+static uint32_t servo_angle_to_duty(float deg) {
     return servo_pulse_to_duty(servo_angle_to_pulse_us(deg));
 }
 
 // 把占空比写到硬件
-static esp_err_t servo_write_duty(int idx, uint32_t duty, bool remember)
-{
+static esp_err_t servo_write_duty(int idx, uint32_t duty, bool remember) {
+    // 停用的那路没建通道，写了只会报错
+    if (servo_is_disabled((servo_id_t)idx)) {
+        return ESP_OK;
+    }
+
     esp_err_t err = ledc_set_duty(BSP_SERVO_MODE, s_servo[idx].channel, duty);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "%s: ledc_set_duty(duty=%u) failed: %s",
@@ -119,8 +154,7 @@ static esp_err_t servo_write_duty(int idx, uint32_t duty, bool remember)
 }
 
 // 改角度并输出
-static esp_err_t servo_apply(int idx, float deg, bool update_target)
-{
+static esp_err_t servo_apply(int idx, float deg, bool update_target) {
     const float a = servo_clamp_deg(deg);
 
     s_servo[idx].angle = a;
@@ -137,8 +171,7 @@ static esp_err_t servo_apply(int idx, float deg, bool update_target)
 }
 
 // 松劲不再使劲
-static esp_err_t servo_do_detach(int idx)
-{
+static esp_err_t servo_do_detach(int idx) {
     // 松劲顺手停定时器
     if (s_servo[idx].release_timer != NULL) {
         esp_timer_stop(s_servo[idx].release_timer);
@@ -152,8 +185,7 @@ static esp_err_t servo_do_detach(int idx)
 
 // 到位后自动松劲省电
 // 舵机顶到尽头会叫
-static void servo_release_cb(void *arg)
-{
+static void servo_release_cb(void *arg) {
     const int idx = (int)(intptr_t)arg;
     if (!servo_id_valid((servo_id_t)idx)) {
         return;
@@ -164,16 +196,14 @@ static void servo_release_cb(void *arg)
 }
 
 // 新动作先取消旧松劲
-static void servo_cancel_release(int idx)
-{
+static void servo_cancel_release(int idx) {
     if (s_servo[idx].release_timer != NULL) {
         esp_timer_stop(s_servo[idx].release_timer);
     }
 }
 
 // 排一个到点松劲
-static void servo_schedule_release(int idx)
-{
+static void servo_schedule_release(int idx) {
 #if BSP_SERVO_RELEASE_MS > 0
     if (s_servo[idx].release_timer == NULL) {
         // 没建起来就一直使劲
@@ -186,8 +216,7 @@ static void servo_schedule_release(int idx)
 }
 
 // 等到点再往下走
-static void servo_wait_until(int64_t due_us)
-{
+static void servo_wait_until(int64_t due_us) {
     while (1) {
         const int64_t remain_us = due_us - esp_timer_get_time();
         if (remain_us <= 0) {
@@ -207,8 +236,7 @@ static void servo_wait_until(int64_t due_us)
 }
 
 // 把硬件准备好
-esp_err_t servo_init(void)
-{
+esp_err_t servo_init(void) {
     if (s_inited) {
         ESP_LOGI(TAG, "already initialized");
         return ESP_OK;
@@ -231,6 +259,13 @@ esp_err_t servo_init(void)
 
     // 再开三个通道
     for (int i = 0; i < (int)SERVO_MAX; i++) {
+        // 写死停用的那路连通道都不建，脚上一点波形都没有
+        if (servo_is_disabled((servo_id_t)i)) {
+            ESP_LOGW(TAG, "  %-7s 已写死停用（gpio%d 不接、不出波形）",
+                     s_servo_name[i], (int)s_servo[i].gpio);
+            continue;
+        }
+
         ledc_channel_config_t ccfg = {
             .gpio_num   = s_servo[i].gpio,
             .speed_mode = BSP_SERVO_MODE,
@@ -254,13 +289,14 @@ esp_err_t servo_init(void)
             return err;
         }
 
-        // 先归位再松劲
-        s_servo[i].angle    = 0.0f;
-        s_servo[i].target   = 0.0f;
+        // 先归位再松劲，归的是关位
+        const float closed = servo_closed_deg((servo_id_t)i);
+        s_servo[i].angle    = closed;
+        s_servo[i].target   = closed;
         // 先允许写占空比
         s_servo[i].attached = true;
 
-        err = servo_write_duty(i, servo_angle_to_duty(0.0f), true);
+        err = servo_write_duty(i, servo_angle_to_duty(closed), true);
         if (err != ESP_OK) {
             return err;
         }
@@ -270,8 +306,9 @@ esp_err_t servo_init(void)
             return err;
         }
 
-        ESP_LOGI(TAG, "  %-7s ch=%d gpio=%-2d -> 0 deg (closed), detached",
-                 s_servo_name[i], (int)s_servo[i].channel, (int)s_servo[i].gpio);
+        ESP_LOGI(TAG, "  %-7s ch=%d gpio=%-2d -> %.0f deg (closed), detached",
+                 s_servo_name[i], (int)s_servo[i].channel, (int)s_servo[i].gpio,
+                 (double)closed);
 
         // 建到点松劲的定时器
 #if BSP_SERVO_RELEASE_MS > 0
@@ -298,13 +335,17 @@ esp_err_t servo_init(void)
 }
 
 // 马上转到某个角度
-esp_err_t servo_set_angle(servo_id_t id, float deg)
-{
+esp_err_t servo_set_angle(servo_id_t id, float deg) {
     if (!s_inited) {
         return ESP_ERR_INVALID_STATE;
     }
     if (!servo_id_valid(id)) {
         return ESP_ERR_INVALID_ARG;
+    }
+    // 停用的那路当没收到，省得上层以为转了
+    if (servo_is_disabled(id)) {
+        ESP_LOGD(TAG, "%s 已停用，忽略", s_servo_name[(int)id]);
+        return ESP_OK;
     }
 
     const int idx = (int)id;
@@ -327,13 +368,17 @@ esp_err_t servo_set_angle(servo_id_t id, float deg)
 
 // 慢慢转到某个角度
 // 会卡住当前任务一会
-esp_err_t servo_set_angle_smooth(servo_id_t id, float deg, uint32_t ms)
-{
+esp_err_t servo_set_angle_smooth(servo_id_t id, float deg, uint32_t ms) {
     if (!s_inited) {
         return ESP_ERR_INVALID_STATE;
     }
     if (!servo_id_valid(id)) {
         return ESP_ERR_INVALID_ARG;
+    }
+    // 停用的那路不用慢慢转
+    if (servo_is_disabled(id)) {
+        ESP_LOGD(TAG, "%s 已停用，忽略", s_servo_name[(int)id]);
+        return ESP_OK;
     }
 
     const int   idx    = (int)id;
@@ -405,8 +450,7 @@ esp_err_t servo_set_angle_smooth(servo_id_t id, float deg, uint32_t ms)
 }
 
 // 按百分比转过去
-esp_err_t servo_set_percent(servo_id_t id, uint8_t percent)
-{
+esp_err_t servo_set_percent(servo_id_t id, uint8_t percent) {
     if (!s_inited) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -417,13 +461,15 @@ esp_err_t servo_set_percent(servo_id_t id, uint8_t percent)
         percent = 100;
     }
 
-    // 零是全关百是全开
-    return servo_set_angle(id, (float)percent * 180.0f / 100.0f);
+    // 零是全关百是全开，关位开位各按各的标定角度算
+    const float closed = servo_closed_deg(id);
+    const float open   = servo_open_deg(id);
+    const float deg    = closed + (open - closed) * (float)percent / 100.0f;
+    return servo_set_angle(id, deg);
 }
 
 // 查现在在哪角度
-float servo_get_angle(servo_id_t id)
-{
+float servo_get_angle(servo_id_t id) {
     if (!servo_id_valid(id)) {
         return 0.0f;
     }
@@ -432,8 +478,7 @@ float servo_get_angle(servo_id_t id)
 }
 
 // 查要去的角度
-float servo_get_target(servo_id_t id)
-{
+float servo_get_target(servo_id_t id) {
     if (!servo_id_valid(id)) {
         return 0.0f;
     }
@@ -442,13 +487,17 @@ float servo_get_target(servo_id_t id)
 }
 
 // 直接给脉宽调试
-esp_err_t servo_set_pulse_us(servo_id_t id, uint32_t us)
-{
+esp_err_t servo_set_pulse_us(servo_id_t id, uint32_t us) {
     if (!s_inited) {
         return ESP_ERR_INVALID_STATE;
     }
     if (!servo_id_valid(id)) {
         return ESP_ERR_INVALID_ARG;
+    }
+    // 停用的那路没有通道可写
+    if (servo_is_disabled(id)) {
+        ESP_LOGD(TAG, "%s 已停用，忽略", s_servo_name[(int)id]);
+        return ESP_OK;
     }
 
     const int idx = (int)id;
@@ -477,13 +526,16 @@ esp_err_t servo_set_pulse_us(servo_id_t id, uint32_t us)
 }
 
 // 松劲不再使劲
-esp_err_t servo_detach(servo_id_t id)
-{
+esp_err_t servo_detach(servo_id_t id) {
     if (!s_inited) {
         return ESP_ERR_INVALID_STATE;
     }
     if (!servo_id_valid(id)) {
         return ESP_ERR_INVALID_ARG;
+    }
+    // 停用的那路没什么可松的
+    if (servo_is_disabled(id)) {
+        return ESP_OK;
     }
 
     esp_err_t err = servo_do_detach((int)id);
@@ -494,13 +546,16 @@ esp_err_t servo_detach(servo_id_t id)
 }
 
 // 恢复使劲
-esp_err_t servo_attach(servo_id_t id)
-{
+esp_err_t servo_attach(servo_id_t id) {
     if (!s_inited) {
         return ESP_ERR_INVALID_STATE;
     }
     if (!servo_id_valid(id)) {
         return ESP_ERR_INVALID_ARG;
+    }
+    // 停用的那路不恢复
+    if (servo_is_disabled(id)) {
+        return ESP_OK;
     }
 
     const int idx = (int)id;
@@ -520,14 +575,12 @@ esp_err_t servo_attach(servo_id_t id)
 }
 
 // 舵机号换名字
-const char *servo_name(servo_id_t id)
-{
+const char *servo_name(servo_id_t id) {
     return servo_id_valid(id) ? s_servo_name[id] : "unknown";
 }
 
 // 名字反查舵机号
-servo_id_t servo_from_name(const char *name)
-{
+servo_id_t servo_from_name(const char *name) {
     if (name == NULL) {
         return SERVO_MAX;
     }
@@ -537,4 +590,9 @@ servo_id_t servo_from_name(const char *name)
         }
     }
     return SERVO_MAX;
+}
+
+// 这路舵机接没接：号合法又没写死停用才算接了
+bool servo_is_enabled(servo_id_t id) {
+    return servo_id_valid(id) && !servo_is_disabled(id);
 }

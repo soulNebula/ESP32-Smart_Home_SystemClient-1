@@ -1,19 +1,6 @@
-set(BSP_EXTRA_REQUIRES "")
-
-# 读配置文件看开关
-set(_bsp_sdkconfig "${CMAKE_CURRENT_LIST_DIR}/../../sdkconfig")
-if(EXISTS "${_bsp_sdkconfig}")
-    file(STRINGS "${_bsp_sdkconfig}" _bsp_voice_sr_on
-         REGEX "^CONFIG_APP_VOICE_SOURCE_ESP_SR=y")
-    if(_bsp_voice_sr_on)
-        list(APPEND BSP_EXTRA_REQUIRES espressif__esp-sr json)
-        message(STATUS "BSP: 语音识别来源 = ESP-SR，已 REQUIRES espressif__esp-sr + json")
-    else()
-        message(STATUS "BSP: 语音识别来源 = ASRPRO（UART），不依赖 esp-sr")
-    endif()
-else()
-    message(STATUS "BSP: 找不到 sdkconfig (${_bsp_sdkconfig})，按不启用 ESP-SR 处理")
-endif()
+# CMakeLists.txt for BSP component
+# 语音识别来源已固定为板载 INMP441(I²S) + ESP-SR 离线识别，
+# 所以 espressif__esp-sr 是固定依赖，不再按 sdkconfig 开关判断
 
 idf_component_register(
     SRCS
@@ -50,5 +37,6 @@ idf_component_register(
         esp_adc
         esp_timer
         esp_ringbuf
-        ${BSP_EXTRA_REQUIRES}
+        espressif__esp-sr
+        json
 )

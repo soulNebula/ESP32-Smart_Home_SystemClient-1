@@ -1,3 +1,5 @@
+// 按键驱动
+
 #include "adkey.h"
 
 #include <string.h>
@@ -53,8 +55,7 @@ static void       *s_cb_user = NULL;
 static bool        s_inited = false;
 
 // 把事件发给外面
-static void adkey_emit(adkey_id_t id, adkey_event_t ev)
-{
+static void adkey_emit(adkey_id_t id, adkey_event_t ev) {
     if (s_cb != NULL) {
         // 这里别做耗时事
         s_cb(id, ev, s_cb_user);
@@ -62,16 +63,14 @@ static void adkey_emit(adkey_id_t id, adkey_event_t ev)
 }
 
 // 读一次电压
-static int adkey_read_mv(void)
-{
+static int adkey_read_mv(void) {
     const int mv = adc_bus_read_mv_avg(ADC_CHANNEL_9, 4);
     // 读失败当空闲
     return (mv >= 0) ? mv : (s_idle_mv + 1);
 }
 
 // 电压落到哪个键
-static adkey_id_t adkey_match(int mv)
-{
+static adkey_id_t adkey_match(int mv) {
     const int r = adkey_logic_match(mv, s_idle_mv, &s_match_cfg);
 
     // 落不进档就限速告警
@@ -104,8 +103,7 @@ static const char *const s_key_names[ADKEY_NUM] = { "1", "2", "3", "4", "OK" };
 static int s_last_key_mv = -1;
 
 // 扫一次键
-static void adkey_scan_once(void)
-{
+static void adkey_scan_once(void) {
     const int        mv      = adkey_read_mv();
     const adkey_id_t now_key = adkey_match(mv);
     const int64_t    now_us  = esp_timer_get_time();
@@ -175,8 +173,7 @@ static void adkey_scan_once(void)
 }
 
 // 常驻扫描任务
-static void adkey_scan_task(void *arg)
-{
+static void adkey_scan_task(void *arg) {
     (void)arg;
 
     TickType_t last_wake = xTaskGetTickCount();
@@ -197,8 +194,7 @@ static void adkey_scan_task(void *arg)
 }
 
 // 开机把键盘准备好
-esp_err_t adkey_init(void)
-{
+esp_err_t adkey_init(void) {
     if (s_inited) {
         ESP_LOGI(TAG, "already initialized");
         return ESP_OK;
@@ -242,26 +238,22 @@ esp_err_t adkey_init(void)
     return ESP_OK;
 }
 
-esp_err_t adkey_register_cb(adkey_cb_t cb, void *user_data)
-{
+esp_err_t adkey_register_cb(adkey_cb_t cb, void *user_data) {
     // 后登记的顶掉前面
     s_cb      = cb;
     s_cb_user = user_data;
     return ESP_OK;
 }
 
-bool adkey_is_pressed(adkey_id_t id)
-{
+bool adkey_is_pressed(adkey_id_t id) {
     return s_stable_key == id;
 }
 
-int adkey_raw_mv(void)
-{
+int adkey_raw_mv(void) {
     return adkey_read_mv();
 }
 
 // 取按下那次的电压
-int adkey_last_mv(void)
-{
+int adkey_last_mv(void) {
     return s_last_key_mv;
 }

@@ -13,20 +13,17 @@ static const char *TAG = "app_link";
 
 static const app_link_t *s_links[APP_LINK_MAX];
 static int               s_link_cnt = 0;
-static bool              s_inited   = false;
 
 // 能重进的锁，防卡死
 static SemaphoreHandle_t s_lock = NULL;
 
-static void app_link_lock_init(void)
-{
+static void app_link_lock_init(void) {
     if (s_lock == NULL) {
         s_lock = xSemaphoreCreateRecursiveMutex();
     }
 }
 
-esp_err_t app_link_register(const app_link_t *link)
-{
+esp_err_t app_link_register(const app_link_t *link) {
     if (link == NULL || link->send == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -57,7 +54,6 @@ esp_err_t app_link_register(const app_link_t *link)
         ret = ESP_ERR_NO_MEM;
     } else {
         s_links[s_link_cnt++] = link;
-        s_inited = true;
         ESP_LOGI(TAG, "link registered: \"%s\" (total %d)",
                  link->name ? link->name : "?", s_link_cnt);
     }
@@ -66,38 +62,7 @@ esp_err_t app_link_register(const app_link_t *link)
     return ret;
 }
 
-esp_err_t app_link_unregister(const app_link_t *link)
-{
-    if (link == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (s_lock == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    xSemaphoreTakeRecursive(s_lock, portMAX_DELAY);
-
-    esp_err_t ret = ESP_ERR_NOT_FOUND;
-    for (int i = 0; i < s_link_cnt; i++) {
-        if (s_links[i] == link) {
-            // 后面往前挪一位
-            for (int j = i; j < s_link_cnt - 1; j++) {
-                s_links[j] = s_links[j + 1];
-            }
-            s_links[--s_link_cnt] = NULL;
-            ESP_LOGI(TAG, "link unregistered: \"%s\" (left %d)",
-                     link->name ? link->name : "?", s_link_cnt);
-            ret = ESP_OK;
-            break;
-        }
-    }
-
-    xSemaphoreGiveRecursive(s_lock);
-    return ret;
-}
-
-int app_link_broadcast(app_msg_type_t type, const char *json, size_t len)
-{
+int app_link_broadcast(app_msg_type_t type, const char *json, size_t len) {
     if (json == NULL || len == 0) {
         return 0;
     }
@@ -136,30 +101,7 @@ int app_link_broadcast(app_msg_type_t type, const char *json, size_t len)
     return sent;
 }
 
-bool app_link_any_connected(void)
-{
-    if (s_lock == NULL) {
-        return false;
-    }
-
-    bool any = false;
-
-    xSemaphoreTakeRecursive(s_lock, portMAX_DELAY);
-    for (int i = 0; i < s_link_cnt; i++) {
-        const app_link_t *lk = s_links[i];
-        if (lk != NULL && lk->is_connected != NULL && lk->is_connected()) {
-            any = true;
-            break;
-        }
-    }
-    xSemaphoreGiveRecursive(s_lock);
-
-    (void)s_inited;
-    return any;
-}
-
-const char *app_msg_type_name(app_msg_type_t type)
-{
+const char *app_msg_type_name(app_msg_type_t type) {
     switch (type) {
     case APP_MSG_STATE:  return "state";
     case APP_MSG_SENSOR: return "sensor";

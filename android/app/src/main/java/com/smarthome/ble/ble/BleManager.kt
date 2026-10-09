@@ -630,9 +630,9 @@ class BleManager(private val appContext: Context) {
         st = st.copy(
             mtu = null,
             mtuOk = false,
-            warning = "MTU 未协商成功（$reason）。" +
+            warning = "MTU 未协商成功（$reason）" +
                 "默认 MTU 23 时单包只有 20 字节，state JSON（约 250B）会被截断，" +
-                "传感器和设备状态可能显示不全。请重连，或在板子端确认 MTU 协商。",
+                "传感器和设备状态可能显示不全，请重连，或在板子端确认 MTU 协商",
             statusText = "已连接（MTU 未协商）",
         )
         emitState()

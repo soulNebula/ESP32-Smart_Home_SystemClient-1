@@ -4,7 +4,6 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/ledc.h"
-#include "driver/uart.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -60,14 +59,8 @@ extern "C" {
 // 1=亮时电压低
 #define BSP_LIGHT_ADC_INVERT    1
 
-// 四路灯带的公共参数
-// 一格0.1微秒
-#define BSP_WS2812_RMT_RES_HZ   10000000
-
-// 改大了就少一路灯
-#define BSP_WS2812_MEM_BLOCK    (48)
-
-// 客厅灯带脚
+// 四路灯光区引脚（当前接普通单色 LED 模块，LEDC 调光）
+// 客厅灯脚
 #define BSP_WS2812_GPIO_LIVING  GPIO_NUM_4
 // 厨房灯带脚
 #define BSP_WS2812_GPIO_KITCHEN GPIO_NUM_5
@@ -75,15 +68,6 @@ extern "C" {
 #define BSP_WS2812_GPIO_BEDROOM GPIO_NUM_6
 // 浴室灯带脚
 #define BSP_WS2812_GPIO_BATH    GPIO_NUM_7
-
-// 每路的灯珠数，按实际改
-#define BSP_WS2812_LED_NUM_LIVING   30
-#define BSP_WS2812_LED_NUM_KITCHEN  30
-#define BSP_WS2812_LED_NUM_BEDROOM  30
-#define BSP_WS2812_LED_NUM_BATH     30
-
-// 1=灯带，0=普通灯
-#define BSP_LED_BACKEND_WS2812  0
 
 // 普通灯的调光参数
 #define BSP_LED_PLAIN_TIMER     LEDC_TIMER_2
@@ -103,11 +87,15 @@ extern "C" {
 #define BSP_SERVO_RES           LEDC_TIMER_14_BIT
 #define BSP_SERVO_FREQ_HZ       50
 
+// 窗帘那路舵机不要了，这里写死停用：1=接，0=不接
+// 停用后不建 LEDC 通道，GPIO15 上什么都不出，窗帘命令一律当不支持
+#define BSP_SERVO_CURTAIN_ENABLE 0
+
 #define BSP_SERVO_CH_CURTAIN    LEDC_CHANNEL_0
 #define BSP_SERVO_CH_WINDOW     LEDC_CHANNEL_1
 #define BSP_SERVO_CH_DOOR       LEDC_CHANNEL_2
 
-// 窗帘信号脚
+// 窗帘信号脚（上面写死停用后这个脚空着不接）
 #define BSP_SERVO_GPIO_CURTAIN  GPIO_NUM_15
 // 窗户信号脚
 #define BSP_SERVO_GPIO_WINDOW   GPIO_NUM_16
@@ -121,6 +109,11 @@ extern "C" {
 // 到位后松劲免得响
 #define BSP_SERVO_RELEASE_MS     1000
 
+// 窗户和门两路舵机的关位、开位角度（度）
+// 关停在三十度，开走到一百五十度，两头都不顶死
+#define BSP_SERVO_WINDOW_DOOR_CLOSED_DEG   30
+#define BSP_SERVO_WINDOW_DOOR_OPEN_DEG     150
+
 // 风扇调速的参数
 #define BSP_FAN_TIMER           LEDC_TIMER_1
 #define BSP_FAN_MODE            LEDC_LOW_SPEED_MODE
@@ -130,10 +123,6 @@ extern "C" {
 #define BSP_FAN_FREQ_HZ         25000
 // 风扇调速脚
 #define BSP_FAN_GPIO_PWM        GPIO_NUM_18
-// 测速脚，可不接
-#define BSP_FAN_GPIO_TACH       GPIO_NUM_14
-// 0=不用测速
-#define BSP_FAN_TACH_ENABLE     0
 
 // 按键，按下接地
 // 脚让给键盘了
@@ -147,16 +136,6 @@ extern "C" {
 // 长按判定
 #define BSP_KEY_LONG_PRESS_MS   2000
 #define BSP_KEY_COUNT           2
-
-// 语音模块的串口脚
-#define BSP_VOICE_UART_PORT     UART_NUM_1
-// 发给模块
-#define BSP_VOICE_TX_GPIO       GPIO_NUM_47
-// 收模块的话
-#define BSP_VOICE_RX_GPIO       GPIO_NUM_21
-// 多数模块9600
-#define BSP_VOICE_BAUD          9600
-#define BSP_VOICE_RX_BUF_SIZE   1024
 
 // 板上那颗小灯
 #define BSP_STATUS_LED_ENABLE   1
@@ -180,7 +159,7 @@ extern "C" {
 // 灯分四区，跟topic走
 #define BSP_LED_ZONE_COUNT      4
 
-// 舵机有三路
+// 舵机按三路排（窗帘那路写死停用，表里留位子给窗和门）
 #define BSP_SERVO_COUNT         3
 
 // 联动的默认门槛

@@ -1,3 +1,6 @@
+// OLED驱动
+// SSD1306 128x64
+
 #include "oled.h"
 #include "i2c_bus.h"
 
@@ -80,8 +83,7 @@ static const uint8_t s_init_cmds[] = {
 };
 
 // 往屏上写一段数据
-static esp_err_t oled_i2c_write(const uint8_t *buf, size_t len)
-{
+static esp_err_t oled_i2c_write(const uint8_t *buf, size_t len) {
     if (s_dev == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -90,8 +92,7 @@ static esp_err_t oled_i2c_write(const uint8_t *buf, size_t len)
 }
 
 // 数错误少打日志
-static void oled_note_io_err(const char *what, esp_err_t err)
-{
+static void oled_note_io_err(const char *what, esp_err_t err) {
     if (s_io_err_cnt < OLED_IO_ERR_LOG_MAX) {
         ESP_LOGW(TAG, "%s failed: %s (%u)", what, esp_err_to_name(err),
                  (unsigned)(s_io_err_cnt + 1));
@@ -100,8 +101,7 @@ static void oled_note_io_err(const char *what, esp_err_t err)
 }
 
 // 发一串设置命令
-static esp_err_t oled_send_cmds(const uint8_t *cmds, size_t n)
-{
+static esp_err_t oled_send_cmds(const uint8_t *cmds, size_t n) {
     uint8_t buf[1 + 32];
 
     if (cmds == NULL || n == 0) {
@@ -118,14 +118,12 @@ static esp_err_t oled_send_cmds(const uint8_t *cmds, size_t n)
 }
 
 // 只清内存不上屏
-static void framebuf_clear(void)
-{
+static void framebuf_clear(void) {
     memset(s_framebuf, 0x00, sizeof(s_framebuf));
 }
 
 // 把屏幕准备好
-esp_err_t oled_init(void)
-{
+esp_err_t oled_init(void) {
     // 已经好了就直接返回
     if (s_ready) {
         ESP_LOGD(TAG, "oled already initialized");
@@ -211,14 +209,12 @@ esp_err_t oled_init(void)
 }
 
 // 屏幕能用吗
-bool oled_is_ready(void)
-{
+bool oled_is_ready(void) {
     return s_ready;
 }
 
 // 清空显示
-void oled_clear(void)
-{
+void oled_clear(void) {
     if (!s_ready) {
         return;
     }
@@ -226,8 +222,7 @@ void oled_clear(void)
 }
 
 // 写一页并上屏
-void oled_write_page(uint8_t page, const uint8_t *data)
-{
+void oled_write_page(uint8_t page, const uint8_t *data) {
     if (!s_ready || s_dev == NULL || data == NULL) {
         return;
     }
@@ -259,8 +254,7 @@ void oled_write_page(uint8_t page, const uint8_t *data)
 }
 
 // 整屏推上去
-void oled_refresh(void)
-{
+void oled_refresh(void) {
     if (!s_ready || s_dev == NULL) {
         return;
     }

@@ -1,18 +1,10 @@
 # 配置项目参数，编译时会把这些参数写进固件
-menu "智能家居 —— 项目配置"
+menu "Smart Home -- Project Config"
 
-    menu "WiFi 设置"
+    menu "WiFi Settings"
 
-        config APP_WIFI_SSID
-            string "WiFi 名称 (SSID)"
-            default "YOUR_WIFI_SSID"
-            help
-                家里路由器的 2.4GHz 名称
-                注意：必须是 2.4GHz 频段
-
-        config APP_WIFI_PASSWORD
-            string "WiFi 密码"
-            default "YOUR_WIFI_PASSWORD"
+        # WiFi 名称与密码不在这里配，改 components/App/wifi_config.h 那两行就行。
+        # 这样密码不会写进 sdkconfig，交付打包时也不会跟着漏出去。
 
         config APP_WIFI_MAX_RETRY
             int "WiFi 最大重连次数，超时重启"
@@ -23,7 +15,7 @@ menu "智能家居 —— 项目配置"
 
     endmenu
 
-    menu "MQTT 设置"
+    menu "MQTT Settings"
 
         config APP_MQTT_BROKER_URI
             string "Broker 地址"
@@ -69,7 +61,7 @@ menu "智能家居 —— 项目配置"
 
     endmenu
 
-    menu "蓝牙 BLE 设置"
+    menu "Bluetooth BLE Settings"
 
         config APP_BLE_ENABLE
             bool "启用蓝牙 BLE 控制链路"
@@ -102,13 +94,13 @@ menu "智能家居 —— 项目配置"
 
     endmenu
 
-    menu "应用行为"
+    menu "App Behavior"
 
         # 默认毫秒
         config APP_SENSOR_PERIOD_MS
             int "传感器采样周期"
             range 500 10000
-            default 1000
+            default 500
 
         config APP_OLED_ENABLE
             bool "启用 OLED 显示"
@@ -135,50 +127,6 @@ menu "智能家居 —— 项目配置"
                   say led_kitchen_on
                   status
                   help
-
-    endmenu
-
-    menu "语音识别来源"
-
-        config APP_VOICE_SOURCE_ESP_SR
-            bool "改用板载 INMP441 I²S 麦克风 + ESP-SR 离线识别"
-            default n
-            help
-                这是"语音指令从哪来"的二选一开关：
-                  关：
-                      外部 ASRPRO 模块，走 UART1（ESP32 TX=GPIO47 / RX=GPIO21，
-                      9600 8N1），模块发命令词序号（单字节 0x01~0x19）或 ASCII
-                      文本行→ 行为与本开关引入之前
-                  开：
-                      板载 INMP441 I²S 数字麦克风 + 乐鑫 ESP-SR 离线识别：
-                      先喊唤醒词，再说命令词；识别全部在本机完成，不联网、不上云
-                      → 识别结果会被翻译成工程原有的 voice_cmd_t，调用同一个
-                        voice_dispatch()
-
-                INMP441 是【I²S】接口
-                      SCK → GPIO13    WS → GPIO39    SD → GPIO40
-                      L/R → GND 
-                      VDD → 3.3
-
-                打开后需要联网拉取 esp-sr 组件（含预训练模型，压缩包约 170MB），
-                  说明见 main/idf_component.yml
-                  拉取一次后即可离线编译
-
-                打开后 model分区会被写入srmodels.bin（约 2.8MB），
-                  分区表见 partitions-16MiB.csv；改分区表后烧录必须带 erase-flash
-
-                本方案只有麦克风、没有喇叭：控制类指令正常执行；
-                  "现在温度 / 播报全部"这类查询指令会走完业务链路，但不会有语音播报输出
-                  将来要做语音播报，esp-sr 自带中文 TTS，需另加功放+喇叭
-
-        # 隐藏开关只做自检
-        config APP_VOICE_SR_MODEL_CHECK
-            bool
-            depends on APP_VOICE_SOURCE_ESP_SR
-            default y
-            help
-                打开 ESP-SR 后强制为 y.voice_esp_sr.c 用它 + CONFIG_SR_WN_* /
-                CONFIG_SR_MN_* 做一致性检查
 
     endmenu
 

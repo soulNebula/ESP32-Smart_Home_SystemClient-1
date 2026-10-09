@@ -37,14 +37,8 @@ typedef struct app_link {
 // 登记一条路
 esp_err_t app_link_register(const app_link_t *link);
 
-// 撤销一条路
-esp_err_t app_link_unregister(const app_link_t *link);
-
 // 发给所有通着的路
 int app_link_broadcast(app_msg_type_t type, const char *json, size_t len);
-
-// 有没有一条路通着
-bool app_link_any_connected(void);
 
 // 种类的名字，日志看
 const char *app_msg_type_name(app_msg_type_t type);

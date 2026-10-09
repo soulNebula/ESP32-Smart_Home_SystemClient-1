@@ -1,3 +1,5 @@
+// 总线板驱动，负责把各件初始化好
+
 #include "board.h"
 
 #include "esp_log.h"
@@ -27,8 +29,7 @@ typedef struct {
 } init_result_t;
 
 // 按顺序把硬件准备好
-esp_err_t board_init(void)
-{
+esp_err_t board_init(void) {
     if (s_inited) {
         ESP_LOGI(TAG, "board already initialized");
         return ESP_OK;
@@ -63,7 +64,12 @@ esp_err_t board_init(void)
     results[n].err  = led_init();
     n++;
 
+#if BSP_SERVO_CURTAIN_ENABLE
     results[n].name = "servo x3";
+#else
+    // 窗帘那路写死停用，只剩窗户和门
+    results[n].name = "servo x2";
+#endif
     results[n].err  = servo_init();
     n++;
 
@@ -127,9 +133,9 @@ esp_err_t board_init(void)
                      lv.rms, lv.peak, lv.peak_to_peak,
                      lv.db_x10 / 10, (lv.db_x10 < 0 ? -lv.db_x10 : lv.db_x10) % 10);
         } else {
-            ESP_LOGW(TAG, "  [MIC ] 没读到有效音频（rms=%d peak=%d）—— INMP441 可能没接。"
+            ESP_LOGW(TAG, "  [MIC ] 没读到有效音频（rms=%d peak=%d）—— INMP441 可能没接"
                           "它是 I²S【不是 I²C】：SCK=GPIO%d WS=GPIO%d SD=GPIO%d，"
-                          "L/R 必须接 GND，VDD 接 3V3。串口敲 `mic` 看实时电平。",
+                          "L/R 必须接 GND，VDD 接 3V3串口敲 `mic` 看实时电平",
                      lv.rms, lv.peak,
                      (int)BSP_I2S_MIC_SCK_GPIO, (int)BSP_I2S_MIC_WS_GPIO, (int)BSP_I2S_MIC_SD_GPIO);
         }
@@ -149,32 +155,28 @@ esp_err_t board_init(void)
     return ESP_ERR_NOT_FOUND;
 }
 
-// 交出总线把手
-i2c_master_bus_handle_t board_get_i2c_bus(void)
-{
-    return i2c_bus_get_handle();
-}
-
 // 打印引脚对照表
-void board_print_pinmap(void)
-{
+void board_print_pinmap(void) {
     ESP_LOGI(TAG, "----------------- PIN MAP (source: board_config.h) -----------------");
     ESP_LOGI(TAG, "  I2C    SDA=GPIO%-2d SCL=GPIO%-2d          -> OLED/SHT30/AHT20/BH1750",
              (int)BSP_I2C_SDA_GPIO, (int)BSP_I2C_SCL_GPIO);
     ESP_LOGI(TAG, "  ADC    LIGHT=GPIO%-2d RAIN=GPIO%-2d       -> 光敏电阻 / 雨滴AO",
              (int)BSP_GPIO_LIGHT_ADC, (int)BSP_GPIO_RAIN_AO);
-    ESP_LOGI(TAG, "  WS2812 LIVING=%-2d KITCHEN=%-2d BEDROOM=%-2d BATH=%-2d",
+    ESP_LOGI(TAG, "  LED    LIVING=%-2d KITCHEN=%-2d BEDROOM=%-2d BATH=%-2d",
              (int)BSP_WS2812_GPIO_LIVING, (int)BSP_WS2812_GPIO_KITCHEN,
              (int)BSP_WS2812_GPIO_BEDROOM, (int)BSP_WS2812_GPIO_BATH);
+#if BSP_SERVO_CURTAIN_ENABLE
     ESP_LOGI(TAG, "  SERVO  CURTAIN=%-2d WINDOW=%-2d DOOR=%-2d",
              (int)BSP_SERVO_GPIO_CURTAIN, (int)BSP_SERVO_GPIO_WINDOW,
              (int)BSP_SERVO_GPIO_DOOR);
-    ESP_LOGI(TAG, "  FAN    PWM=%-2d TACH=%-2d",
-             (int)BSP_FAN_GPIO_PWM, (int)BSP_FAN_GPIO_TACH);
+#else
+    // 窗帘那路写死停用，别在引脚表里报它
+    ESP_LOGI(TAG, "  SERVO  CURTAIN=停用 WINDOW=%-2d DOOR=%-2d",
+             (int)BSP_SERVO_GPIO_WINDOW, (int)BSP_SERVO_GPIO_DOOR);
+#endif
+    ESP_LOGI(TAG, "  FAN    PWM=%-2d", (int)BSP_FAN_GPIO_PWM);
     ESP_LOGI(TAG, "  KEY    KEY1=%-2d KEY2=%-2d",
              (int)BSP_KEY_GPIO_KEY1, (int)BSP_KEY_GPIO_KEY2);
-    ESP_LOGI(TAG, "  VOICE  TX=%-2d RX=%-2d  (ESP TX -> module RXD)",
-             (int)BSP_VOICE_TX_GPIO, (int)BSP_VOICE_RX_GPIO);
     ESP_LOGI(TAG, "  I2S MIC SCK=%-2d WS=%-2d SD=%-2d  (INMP441, I²S 不是 I²C! L/R->GND, VDD->3V3)",
              (int)BSP_I2S_MIC_SCK_GPIO, (int)BSP_I2S_MIC_WS_GPIO, (int)BSP_I2S_MIC_SD_GPIO);
     ESP_LOGI(TAG, "  STATUS LED = GPIO%d (onboard WS2812)", (int)BSP_STATUS_LED_GPIO);

@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "board_config.h"
+
 #include "automation.h"
 #include "device_model.h"
 #include "esp_log.h"
@@ -36,13 +38,15 @@ static void t_led_bath(void)    { device_set_power(DEV_LED_BATH, true, SRC_SELFT
 static void t_led_bath_end(void)    { device_set_power(DEV_LED_BATH, false, SRC_SELFTEST); }
 static void t_fan(void)         { device_set_level(DEV_FAN, 60, SRC_SELFTEST); }
 static void t_fan_end(void)     { device_set_power(DEV_FAN, false, SRC_SELFTEST); }
-// 一半就是九十度
+// 一半就是九十度（窗户和门关三十度、开一百五十度）
 static void t_window(void)      { device_set_level(DEV_WINDOW, 50, SRC_SELFTEST); }
 static void t_window_end(void)  { device_set_level(DEV_WINDOW, 0, SRC_SELFTEST); }
 static void t_door(void)        { device_set_level(DEV_DOOR, 50, SRC_SELFTEST); }
 static void t_door_end(void)    { device_set_level(DEV_DOOR, 0, SRC_SELFTEST); }
+#if BSP_SERVO_CURTAIN_ENABLE
 static void t_curtain(void)     { device_set_level(DEV_CURTAIN, 50, SRC_SELFTEST); }
 static void t_curtain_end(void) { device_set_level(DEV_CURTAIN, 0, SRC_SELFTEST); }
+#endif
 
 #define TEST_ITEM_COUNT         9
 // 末项是看读数
@@ -59,7 +63,12 @@ static const test_item_t s_items[TEST_ITEM_COUNT] = {
     // 转过去停会儿再回
     { "窗户",   t_window,      t_window_end,      3 },
     { "门",     t_door,        t_door_end,        3 },
+#if BSP_SERVO_CURTAIN_ENABLE
     { "窗帘",   t_curtain,     t_curtain_end,     3 },
+#else
+    // 窗帘舵机写死不要了，占着位子马上过
+    { "窗帘(停用)", NULL,      NULL,              0 },
+#endif
     // 只看读数
     { "传感器", NULL,          NULL,              0 },
 };
@@ -82,13 +91,11 @@ static phase_t  s_phase     = PHASE_IDLE;
 // 这一项跑了几拍
 static uint16_t s_elapsed   = 0;
 
-bool selftest_is_active(void)
-{
+bool selftest_is_active(void) {
     return s_active;
 }
 
-void selftest_enter(void)
-{
+void selftest_enter(void) {
     if (s_active) {
         return;
     }
@@ -105,8 +112,7 @@ void selftest_enter(void)
              s_prev_auto ? "on" : "off");
 }
 
-void selftest_exit(void)
-{
+void selftest_exit(void) {
     if (!s_active) {
         return;
     }
@@ -126,8 +132,7 @@ void selftest_exit(void)
     // 屏幕下一拍自己会刷
 }
 
-void selftest_run_current(void)
-{
+void selftest_run_current(void) {
     if (!s_active) {
         return;
     }
@@ -148,8 +153,7 @@ void selftest_run_current(void)
     ESP_LOGI(TAG, "run item %d/%d: %s", (int)s_idx + 1, TEST_ITEM_COUNT, it->name);
 }
 
-void selftest_next(void)
-{
+void selftest_next(void) {
     if (!s_active) {
         return;
     }
@@ -167,65 +171,7 @@ void selftest_next(void)
     ESP_LOGI(TAG, "item %d/%d: %s", (int)s_idx + 1, TEST_ITEM_COUNT, s_items[s_idx].name);
 }
 
-void selftest_prev(void)
-{
-    if (!s_active) {
-        return;
-    }
-
-    const test_item_t *it = &s_items[s_idx];
-    if (s_phase == PHASE_RUN && it->finish != NULL) {
-        // 切走前先收尾
-        it->finish();
-    }
-
-    s_idx     = (uint8_t)((s_idx + TEST_ITEM_COUNT - 1) % TEST_ITEM_COUNT);
-    s_phase   = PHASE_IDLE;
-    s_elapsed = 0;
-
-    ESP_LOGI(TAG, "item %d/%d: %s", (int)s_idx + 1, TEST_ITEM_COUNT, s_items[s_idx].name);
-}
-
-void selftest_on_adkey(adkey_id_t id, adkey_event_t ev)
-{
-    if (ev != ADKEY_EVENT_CLICK && ev != ADKEY_EVENT_LONG_PRESS) {
-        // 按下抬起先不管
-        return;
-    }
-
-    if (ev == ADKEY_EVENT_LONG_PRESS) {
-        if (id == ADKEY_OK) {
-            // 长按收工
-            selftest_exit();
-        }
-        return;
-    }
-
-    switch (id) {
-    case ADKEY_1:
-        // 一号键退出
-        selftest_exit();
-        break;
-    case ADKEY_3:
-        // 三号键往上翻
-        selftest_prev();
-        break;
-    case ADKEY_4:
-        // 四号键往下翻
-        selftest_next();
-        break;
-    case ADKEY_OK:
-        // 确认键就开跑
-        selftest_run_current();
-        break;
-    default:
-        // 二号键先空着
-        break;
-    }
-}
-
-void selftest_tick(void)
-{
+void selftest_tick(void) {
     if (!s_active) {
         return;
     }
@@ -244,28 +190,23 @@ void selftest_tick(void)
 
 }
 
-uint8_t selftest_get_count(void)
-{
+uint8_t selftest_get_count(void) {
     return TEST_ITEM_COUNT;
 }
 
-uint8_t selftest_get_index(void)
-{
+uint8_t selftest_get_index(void) {
     return s_idx;
 }
 
-uint8_t selftest_get_phase(void)
-{
+uint8_t selftest_get_phase(void) {
     return (uint8_t)s_phase;
 }
 
-const char *selftest_get_item_name(uint8_t idx)
-{
+const char *selftest_get_item_name(uint8_t idx) {
     return (idx < TEST_ITEM_COUNT) ? s_items[idx].name : "";
 }
 
-void selftest_run_index(uint8_t idx)
-{
+void selftest_run_index(uint8_t idx) {
     if (!s_active || idx >= TEST_ITEM_COUNT) {
         return;
     }

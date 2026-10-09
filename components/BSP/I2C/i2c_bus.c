@@ -1,3 +1,5 @@
+// I2C总线驱动
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -24,8 +26,7 @@ static const char *TAG = "I2C_BUS";
 static i2c_master_bus_handle_t s_bus = NULL;
 
 // 把 I2C 线拉起来
-esp_err_t i2c_bus_init(void)
-{
+esp_err_t i2c_bus_init(void) {
     // 起过就直接返回
     if (s_bus != NULL) {
         return ESP_OK;
@@ -61,14 +62,12 @@ esp_err_t i2c_bus_init(void)
 }
 
 // 交出总线把手
-i2c_master_bus_handle_t i2c_bus_get_handle(void)
-{
+i2c_master_bus_handle_t i2c_bus_get_handle(void) {
     return s_bus;
 }
 
 // 看地址在不在线
-esp_err_t i2c_bus_probe(uint8_t dev_addr)
-{
+esp_err_t i2c_bus_probe(uint8_t dev_addr) {
     if (s_bus == NULL) {
         ESP_LOGE(TAG, "probe 0x%02X before bus init", dev_addr);
         return ESP_ERR_INVALID_STATE;
@@ -77,8 +76,7 @@ esp_err_t i2c_bus_probe(uint8_t dev_addr)
 }
 
 // 扫一遍谁在线
-int i2c_bus_scan(void)
-{
+int i2c_bus_scan(void) {
     if (s_bus == NULL) {
         ESP_LOGE(TAG, "scan before bus init");
         return 0;

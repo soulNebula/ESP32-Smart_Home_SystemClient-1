@@ -20,24 +20,11 @@
 static const char *TAG = "ble_app";
 
 // 报一句不可用
-esp_err_t ble_app_start(void)
-{
+esp_err_t ble_app_start(void) {
     ESP_LOGW(TAG, "BLE 未编译进固件（CONFIG_BT_ENABLED=%d, CONFIG_APP_BLE_ENABLE=%d），"
                   "手机蓝牙控制不可用；MQTT 不受影响",
              (int)CONFIG_BT_ENABLED, (int)CONFIG_APP_BLE_ENABLE);
     return ESP_ERR_NOT_SUPPORTED;
-}
-
-// 没连上
-bool ble_app_is_connected(void)
-{
-    return false;
-}
-
-// 没连上给零
-int ble_app_get_mtu(void)
-{
-    return 0;
 }
 
 // 真正实现开始
@@ -136,16 +123,14 @@ static const app_link_t s_ble_link = {
 };
 
 // 地址转成好读的字
-static void ble_format_addr(const uint8_t addr[6], char out[18])
-{
+static void ble_format_addr(const uint8_t addr[6], char out[18]) {
     snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
              addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
 }
 
 // 取号跟那边一样
 // 抄一份省得牵扯
-static esp_err_t ble_build_uid(char *buf, size_t len)
-{
+static esp_err_t ble_build_uid(char *buf, size_t len) {
     // 号码加结尾符
     if (buf == NULL || len < 7) {
         return ESP_ERR_INVALID_ARG;
@@ -163,8 +148,7 @@ static esp_err_t ble_build_uid(char *buf, size_t len)
 }
 
 // 拼广播名防超长
-static esp_err_t ble_build_device_name(void)
-{
+static esp_err_t ble_build_device_name(void) {
     char uid[16] = { 0 };
     esp_err_t err;
     int n;
@@ -191,8 +175,7 @@ static int ble_gatt_rx_access(uint16_t conn_handle, uint16_t attr_handle,
 // 占位，平时不来
 // 有人加读才走到
 static int ble_gatt_tx_access(uint16_t conn_handle, uint16_t attr_handle,
-                              struct ble_gatt_access_ctxt *ctxt, void *arg)
-{
+                              struct ble_gatt_access_ctxt *ctxt, void *arg) {
     (void)conn_handle;
     (void)attr_handle;
     (void)arg;
@@ -240,8 +223,7 @@ static void ble_start_advertising(void);
 
 // 配好并开始广播
 // 一直播到有人连
-static void ble_start_advertising(void)
-{
+static void ble_start_advertising(void) {
     struct ble_hs_adv_fields adv = { 0 };
     struct ble_hs_adv_fields rsp = { 0 };
     struct ble_gap_adv_params params = { 0 };
@@ -296,8 +278,7 @@ static void ble_start_advertising(void)
              s_dev_name);
 }
 
-static int ble_gap_event(struct ble_gap_event *event, void *arg)
-{
+static int ble_gap_event(struct ble_gap_event *event, void *arg) {
     (void)arg;
 
     switch (event->type) {
@@ -382,8 +363,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
 
 // 收帧，先查再分发
 static int ble_gatt_rx_access(uint16_t conn_handle, uint16_t attr_handle,
-                              struct ble_gatt_access_ctxt *ctxt, void *arg)
-{
+                              struct ble_gatt_access_ctxt *ctxt, void *arg) {
     (void)attr_handle;
     (void)arg;
 
@@ -474,14 +454,12 @@ static int ble_gatt_rx_access(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
-static bool ble_link_is_connected(void)
-{
+static bool ble_link_is_connected(void) {
     return (s_conn_handle != BLE_HS_CONN_HANDLE_NONE);
 }
 
 // 加帧头后通知手机
-static esp_err_t ble_link_send(app_msg_type_t type, const char *json, size_t len)
-{
+static esp_err_t ble_link_send(app_msg_type_t type, const char *json, size_t len) {
     if (json == NULL || len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -539,14 +517,12 @@ static esp_err_t ble_link_send(app_msg_type_t type, const char *json, size_t len
 }
 
 // 复位只记日志
-static void ble_on_reset(int reason)
-{
+static void ble_on_reset(int reason) {
     ESP_LOGE(TAG, "NimBLE 协议栈复位，reason=%d", reason);
 }
 
 // 同步好了开广播
-static void ble_on_sync(void)
-{
+static void ble_on_sync(void) {
     int rc;
 
     // 先保证有地址可用
@@ -580,16 +556,14 @@ static void ble_on_sync(void)
 }
 
 // 常驻的蓝牙任务
-static void ble_host_task(void *param)
-{
+static void ble_host_task(void *param) {
     (void)param;
     // 进去就不出来
     nimble_port_run();
     vTaskDelete(NULL);
 }
 
-esp_err_t ble_app_start(void)
-{
+esp_err_t ble_app_start(void) {
     esp_err_t err;
     int rc;
 
@@ -667,23 +641,6 @@ esp_err_t ble_app_start(void)
 
     ESP_LOGI(TAG, "BLE 链路已启动：广播名 \"%s\"，等待手机连接", s_dev_name);
     return ESP_OK;
-}
-
-// 看有没有手机连着
-bool ble_app_is_connected(void)
-{
-    return ble_link_is_connected();
-}
-
-// 看当前能收多大包
-int ble_app_get_mtu(void)
-{
-    uint16_t conn = s_conn_handle;
-    if (conn == BLE_HS_CONN_HANDLE_NONE) {
-        // 没连就给零
-        return 0;
-    }
-    return (int)ble_att_mtu(conn);
 }
 
 // 蓝牙总开关到此

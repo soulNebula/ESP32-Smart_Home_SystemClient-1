@@ -67,7 +67,7 @@ _Static_assert(sizeof(automation_cfg_t) < 65535, "automation_cfg_t too large for
     .temp_fan_off_c     = (float)BSP_DEF_TEMP_FAN_OFF_C, /* 默认二十六 */   \
     .fan_auto_speed     = 70,                      \
     .rain_pct           = (float)BSP_DEF_RAIN_PCT, /* 默认三十 */   \
-    .auto_window_reopen = false,                   /* 雨停先不开窗 */ \
+    .auto_window_reopen = true,                    /* 雨停自动开窗 */ \
     .auto_light_enable  = true,                    \
     .auto_temp_enable   = true,                    \
     .auto_rain_enable   = true,                    \
@@ -82,43 +82,37 @@ static int64_t s_last_manual_ms[DEV_COUNT];
 static SemaphoreHandle_t s_lock  = NULL;
 static bool              s_inited = false;
 
-static inline void auto_lock(void)
-{
+static inline void auto_lock(void) {
     if (s_lock != NULL) {
         (void)xSemaphoreTake(s_lock, portMAX_DELAY);
     }
 }
 
-static inline void auto_unlock(void)
-{
+static inline void auto_unlock(void) {
     if (s_lock != NULL) {
         (void)xSemaphoreGive(s_lock);
     }
 }
 
-static void cfg_set_defaults(automation_cfg_t *c)
-{
+static void cfg_set_defaults(automation_cfg_t *c) {
     *c = (automation_cfg_t)AUTO_CFG_DEFAULT_INIT;
 }
 
-static void cfg_store(const automation_cfg_t *c)
-{
+static void cfg_store(const automation_cfg_t *c) {
     auto_lock();
     s_cfg = *c;
     auto_unlock();
 }
 
 // 锁里抄一份配置出来
-static void cfg_snapshot(automation_cfg_t *out)
-{
+static void cfg_snapshot(automation_cfg_t *out) {
     auto_lock();
     *out = s_cfg;
     auto_unlock();
 }
 
 // 查查这几条线合不合理
-static bool cfg_validate(const automation_cfg_t *c)
-{
+static bool cfg_validate(const automation_cfg_t *c) {
     if (!isfinite(c->light_on_lux) || !isfinite(c->light_off_lux) ||
         !isfinite(c->temp_fan_on_c) || !isfinite(c->temp_fan_off_c) ||
         !isfinite(c->rain_pct)) {
@@ -148,8 +142,7 @@ static bool cfg_validate(const automation_cfg_t *c)
     return true;
 }
 
-esp_err_t automation_init(void)
-{
+esp_err_t automation_init(void) {
     if (s_inited) {
         ESP_LOGD(TAG, "already initialized");
         return ESP_OK;
@@ -192,8 +185,7 @@ esp_err_t automation_init(void)
     return ESP_OK;
 }
 
-esp_err_t automation_load(void)
-{
+esp_err_t automation_load(void) {
     automation_cfg_t loaded;
     cfg_set_defaults(&loaded);
 
@@ -244,8 +236,7 @@ esp_err_t automation_load(void)
     return ESP_OK;
 }
 
-esp_err_t automation_save(void)
-{
+esp_err_t automation_save(void) {
     auto_cfg_blob_t blob;
     memset(&blob, 0, sizeof(blob));
 
@@ -280,8 +271,7 @@ esp_err_t automation_save(void)
     return ESP_OK;
 }
 
-esp_err_t automation_set_enabled(bool enabled)
-{
+esp_err_t automation_set_enabled(bool enabled) {
     auto_lock();
     s_cfg.enabled = enabled;
     auto_unlock();
@@ -290,8 +280,7 @@ esp_err_t automation_set_enabled(bool enabled)
     return ESP_OK;
 }
 
-bool automation_is_enabled(void)
-{
+bool automation_is_enabled(void) {
     auto_lock();
     bool en = s_cfg.enabled;
     auto_unlock();
@@ -299,13 +288,11 @@ bool automation_is_enabled(void)
 }
 
 // 给的是里头地址，改完存
-automation_cfg_t *automation_get_cfg(void)
-{
+automation_cfg_t *automation_get_cfg(void) {
     return &s_cfg;
 }
 
-esp_err_t automation_set_threshold(const char *key, float value)
-{
+esp_err_t automation_set_threshold(const char *key, float value) {
     if (key == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -406,8 +393,7 @@ esp_err_t automation_set_threshold(const char *key, float value)
 }
 
 // 拿一份配置拼成 JSON
-static int cfg_json_build(const automation_cfg_t *c, char *buf, size_t len)
-{
+static int cfg_json_build(const automation_cfg_t *c, char *buf, size_t len) {
     if ((c == NULL) || (buf == NULL) || (len == 0)) {
         return 0;
     }
@@ -450,15 +436,13 @@ static int cfg_json_build(const automation_cfg_t *c, char *buf, size_t len)
     return written;
 }
 
-int automation_cfg_json(char *buf, size_t len)
-{
+int automation_cfg_json(char *buf, size_t len) {
     automation_cfg_t snap;
     cfg_snapshot(&snap);
     return cfg_json_build(&snap, buf, len);
 }
 
-void automation_notify_manual(device_id_t id)
-{
+void automation_notify_manual(device_id_t id) {
     const int64_t now_ms = esp_timer_get_time() / 1000;
 
     auto_lock();
@@ -477,8 +461,7 @@ void automation_notify_manual(device_id_t id)
 }
 
 // 看这台现在让不让碰
-static bool guard_ok(device_id_t id, int64_t now_ms)
-{
+static bool guard_ok(device_id_t id, int64_t now_ms) {
     if (((int)id < 0) || (id >= DEV_COUNT)) {
         return true;
     }
@@ -492,13 +475,11 @@ static bool guard_ok(device_id_t id, int64_t now_ms)
 }
 
 // 看光照的数是不是真的
-static bool light_data_valid(const sensor_data_t *d)
-{
+static bool light_data_valid(const sensor_data_t *d) {
     return d->light_is_bh1750 || (d->light_mv > 0) || (d->light_pct > 0.0f);
 }
 
-void automation_tick(const sensor_data_t *d)
-{
+void automation_tick(const sensor_data_t *d) {
     if (d == NULL) {
         return;
     }
@@ -534,6 +515,7 @@ void automation_tick(const sensor_data_t *d)
             }
         }
 
+#if BSP_SERVO_CURTAIN_ENABLE
         // 窗帘和灯正相反
         const uint8_t curtain_pos = device_get_level(DEV_CURTAIN);
         if ((d->lux < cfg.light_on_lux) && (curtain_pos > 0)) {
@@ -553,6 +535,9 @@ void automation_tick(const sensor_data_t *d)
                 ESP_LOGD(TAG, "rule1: curtain in manual guard, skip");
             }
         }
+#else
+        // 窗帘舵机写死停用了，这条联动跟着一起关掉
+#endif
     }
 
     // 热了开风扇，凉了关
@@ -580,23 +565,24 @@ void automation_tick(const sensor_data_t *d)
     // 下雨就把窗关上
     if (cfg.auto_rain_enable) {
         const bool raining     = (d->rain_pct > cfg.rain_pct);
+        // 重开要更干一档，留迟滞免得反复开关
+        const float reopen_line = cfg.rain_pct - AUTO_RAIN_REOPEN_HYST_PCT;
+        const bool dry_enough  = (d->rain_pct <= (reopen_line > 0.0f ? reopen_line : 0.0f));
         const bool window_open = device_get_power(DEV_WINDOW);
 
         if (raining && window_open) {
+            // 安全优先：下雨关窗不理会手动保护，马上关
+            ESP_LOGI(TAG, "rule3: rain %.1f%% > %.1f%% & window open -> WINDOW CLOSE (safety, guard bypassed)",
+                     (double)d->rain_pct, (double)cfg.rain_pct);
+            device_set_power(DEV_WINDOW, false, SRC_AUTO);
+        } else if (!raining && dry_enough && !window_open && cfg.auto_window_reopen) {
+            // 重开是舒适动作，手动保护照旧
             if (guard_ok(DEV_WINDOW, now_ms)) {
-                ESP_LOGI(TAG, "rule3: rain %.1f%% > %.1f%% & window open -> WINDOW CLOSE",
-                         (double)d->rain_pct, (double)cfg.rain_pct);
-                device_set_power(DEV_WINDOW, false, SRC_AUTO);
-            } else {
-                ESP_LOGD(TAG, "rule3: window in manual guard, skip");
-            }
-        } else if (!raining && !window_open && cfg.auto_window_reopen) {
-            if (guard_ok(DEV_WINDOW, now_ms)) {
-                ESP_LOGI(TAG, "rule3: rain %.1f%% <= %.1f%% & window closed -> WINDOW REOPEN",
-                         (double)d->rain_pct, (double)cfg.rain_pct);
+                ESP_LOGI(TAG, "rule3: rain %.1f%% <= %.1f%% (hyst) & window closed -> WINDOW REOPEN",
+                         (double)d->rain_pct, (double)reopen_line);
                 device_set_power(DEV_WINDOW, true, SRC_AUTO);
             } else {
-                ESP_LOGD(TAG, "rule3: window in manual guard, skip");
+                ESP_LOGD(TAG, "rule3: window in manual guard, skip reopen");
             }
         }
     }

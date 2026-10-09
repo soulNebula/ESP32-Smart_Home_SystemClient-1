@@ -18,6 +18,8 @@
 #include "freertos/task.h"
 
 #include "led.h"
+// WiFi 账号配置：唯一配置点就是下面这个文件，改它就行
+#include "wifi_config.h"
 
 static const char *TAG = "wifi_sta";
 
@@ -38,8 +40,7 @@ static esp_event_handler_instance_t s_wifi_evt_inst = NULL;
 static esp_event_handler_instance_t s_ip_evt_inst   = NULL;
 
 // 把名字拷进定长格子
-static void copy_into_u8(uint8_t *dst, size_t dst_size, const char *src)
-{
+static void copy_into_u8(uint8_t *dst, size_t dst_size, const char *src) {
     if (dst == NULL || dst_size == 0) {
         return;
     }
@@ -52,14 +53,13 @@ static void copy_into_u8(uint8_t *dst, size_t dst_size, const char *src)
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
-                               int32_t event_id, void *event_data)
-{
+                               int32_t event_id, void *event_data) {
     (void)arg;
 
     if (event_base == WIFI_EVENT) {
         switch (event_id) {
         case WIFI_EVENT_STA_START:
-            ESP_LOGI(TAG, "STA started, connecting to \"%s\" ...", CONFIG_APP_WIFI_SSID);
+            ESP_LOGI(TAG, "STA started, connecting to \"%s\" ...", APP_WIFI_SSID);
             led_status_set(LED_STATUS_WIFI_CONNECTING);
             esp_wifi_connect();
             break;
@@ -109,8 +109,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
-esp_err_t wifi_init_sta(void)
-{
+esp_err_t wifi_init_sta(void) {
     if (s_inited) {
         ESP_LOGI(TAG, "already initialized, skip");
         return ESP_OK;
@@ -165,11 +164,11 @@ esp_err_t wifi_init_sta(void)
     }
 
     wifi_config_t wifi_cfg = { 0 };
-    copy_into_u8(wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid), CONFIG_APP_WIFI_SSID);
-    copy_into_u8(wifi_cfg.sta.password, sizeof(wifi_cfg.sta.password), CONFIG_APP_WIFI_PASSWORD);
+    copy_into_u8(wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid), APP_WIFI_SSID);
+    copy_into_u8(wifi_cfg.sta.password, sizeof(wifi_cfg.sta.password), APP_WIFI_PASSWORD);
 
     // 没密码就得放宽
-    if (CONFIG_APP_WIFI_PASSWORD[0] == '\0') {
+    if (APP_WIFI_PASSWORD[0] == '\0') {
         wifi_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
     } else {
         wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
@@ -182,18 +181,20 @@ esp_err_t wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     s_inited = true;
-    ESP_LOGI(TAG, "init done: ssid=\"%s\" max_retry=%d", CONFIG_APP_WIFI_SSID,
+    ESP_LOGI(TAG, "init done: ssid=\"%s\" max_retry=%d", APP_WIFI_SSID,
              CONFIG_APP_WIFI_MAX_RETRY);
+
+    if (APP_WIFI_SSID[0] == '\0' || strcmp(APP_WIFI_SSID, "YOUR_WIFI_SSID") == 0) {
+        ESP_LOGW(TAG, "WiFi 还没配置：请编辑 components/App/wifi_config.h 填上 SSID 与密码");
+    }
     return ESP_OK;
 }
 
-bool wifi_is_connected(void)
-{
+bool wifi_is_connected(void) {
     return s_got_ip;
 }
 
-void wifi_wait_connected(uint32_t timeout_ms)
-{
+void wifi_wait_connected(uint32_t timeout_ms) {
     uint32_t waited = 0;
 
     while (!s_got_ip && waited < timeout_ms) {
@@ -209,8 +210,7 @@ void wifi_wait_connected(uint32_t timeout_ms)
     }
 }
 
-esp_err_t wifi_get_ip_str(char *buf, size_t len)
-{
+esp_err_t wifi_get_ip_str(char *buf, size_t len) {
     int n;
 
     if (buf == NULL) {
@@ -224,8 +224,7 @@ esp_err_t wifi_get_ip_str(char *buf, size_t len)
     return ESP_OK;
 }
 
-int8_t wifi_get_rssi(void)
-{
+int8_t wifi_get_rssi(void) {
     wifi_ap_record_t ap = { 0 };
 
     if (!s_got_ip) {
@@ -237,8 +236,7 @@ int8_t wifi_get_rssi(void)
     return ap.rssi;
 }
 
-esp_err_t wifi_get_mac_suffix(char *buf, size_t len)
-{
+esp_err_t wifi_get_mac_suffix(char *buf, size_t len) {
     uint8_t mac[6] = { 0 };
     esp_err_t err;
 

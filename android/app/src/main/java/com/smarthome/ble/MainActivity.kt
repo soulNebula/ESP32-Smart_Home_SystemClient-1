@@ -146,9 +146,9 @@ private fun PermissionGate(denied: List<String>, onRequest: () -> Unit) {
         Spacer(Modifier.height(12.dp))
         Text(
             if (needsLocation) {
-                "Android 11 及以下扫描 BLE 需要「位置信息」权限。"
+                "Android 11 及以下扫描 BLE 需要「位置信息」权限"
             } else {
-                "Android 12 及以上需要「附近的设备」权限才能扫描并连接 SmartHome 板子。"
+                "Android 12 及以上需要「附近的设备」权限才能扫描并连接 SmartHome 板子"
             },
             style = MaterialTheme.typography.bodyMedium,
         )
@@ -161,7 +161,7 @@ private fun PermissionGate(denied: List<String>, onRequest: () -> Unit) {
             ) {
                 Column(Modifier.padding(12.dp)) {
                     Text(
-                        "权限被拒绝，App 无法扫描任何设备。",
+                        "权限被拒绝，App 无法扫描任何设备",
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         fontWeight = FontWeight.Bold,
                     )
@@ -174,7 +174,7 @@ private fun PermissionGate(denied: List<String>, onRequest: () -> Unit) {
                     Spacer(Modifier.height(8.dp))
                     Text(
                         "可点下面的「重试」再次弹出系统授权框；" +
-                            "若已勾选“不再询问”，请到 系统设置 → 应用 → 智能家居 BLE → 权限 里手动开启。",
+                            "若已勾选“不再询问”，请到 系统设置 → 应用 → 智能家居 BLE → 权限 里手动开启",
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         fontSize = 12.sp,
                     )
@@ -418,7 +418,7 @@ private fun BluetoothOffCard(onEnableBluetooth: () -> Unit) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "请先打开系统蓝牙，然后点下面的按钮重新检查，再开始扫描。",
+                "请先打开系统蓝牙，然后点下面的按钮重新检查，再开始扫描",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onErrorContainer,
             )
@@ -809,7 +809,7 @@ private fun LogCard(log: List<LogEntry>) {
         ) {
             if (log.isEmpty()) {
                 Text(
-                    "暂无日志。连接成功后这里会显示收发的原始 JSON。",
+                    "暂无日志，连接成功后这里会显示收发的原始 JSON",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.outline,
                 )
@@ -864,7 +864,7 @@ private fun ColorDialog(
                 RgbSlider("B", b) { b = it }
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "当前硬件为单色 LED，颜色命令在硬件上无效，仅备将来换 RGB 灯带时使用。",
+                    "当前硬件为单色 LED，颜色命令在硬件上无效，仅备将来换 RGB 灯带时使用",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.error,
                 )

@@ -56,8 +56,6 @@ typedef struct {
     uint8_t  level;
     // 灯的颜色，别的没用
     uint8_t  r, g, b;
-    // 改过多少次，调试看
-    uint32_t change_cnt;
 } device_state_t;
 
 // 状态一变就通知上层
@@ -83,9 +81,6 @@ esp_err_t device_all_off(ctrl_source_t src);
 
 bool    device_get_power(device_id_t id);
 uint8_t device_get_level(device_id_t id);
-esp_err_t device_get_color(device_id_t id, uint8_t *r, uint8_t *g, uint8_t *b);
-const device_state_t *device_get_state(device_id_t id);
-
 // 设备名字，上报日志用
 const char *device_id_name(device_id_t id);
 

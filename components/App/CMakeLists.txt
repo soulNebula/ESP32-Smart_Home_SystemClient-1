@@ -1,3 +1,4 @@
+# CMakeLists.txt for App component
 idf_component_register(
     SRCS
         "device_model.c"
