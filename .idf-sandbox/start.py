@@ -538,10 +538,13 @@ def run(plat, task, args):
     if here not in sys.path:
         sys.path.insert(0, here)
 
-    # prepare 是修沙箱的，不能因为它自己检查不过就不让跑
-    if task != 'prepare' and not check_tools(plat):
+    # gui / doctor / prepare 这三个**即使沙箱不完整也必须能跑起来**。
+    # 尤其是 gui：从 GitHub clone 下来时沙箱是空的，用户双击就想看到窗口、
+    # 点那个「配置沙箱环境」按钮。要是这里直接拦掉，他只会看到黑窗口里一行字，
+    # 连按钮都摸不着 —— 那就谈不上傻瓜式了。
+    if task not in ('prepare', 'doctor', 'gui') and not check_tools(plat):
         return 3
-    if not ensure_python_env(plat, task):
+    if task != 'gui' and not ensure_python_env(plat, task):
         return 3
 
     module_name = filename[:-3]           # 'gui.py' -> 'gui'

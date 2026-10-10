@@ -599,6 +599,93 @@ def prepare_python_env(sandbox: Sandbox, reporter: Reporter,
 # 在线配置：联网把沙箱搭起来，再自检
 # ---------------------------------------------------------------------------
 
+# 便携 Python 的来源：python-build-standalone，走 npmmirror 国内镜像（实测 0.4 秒响应）
+# 这个构建**自带 tkinter**（tcl/ + _tkinter.pyd + tk86t.dll），
+# 所以下完以后图形界面不依赖用户系统 Python 有没有 tkinter
+PY_VERSION = '3.11.17'
+PY_TAG = '20261009'
+PY_ASSET = f'cpython-{PY_VERSION}+{PY_TAG}-x86_64-pc-windows-msvc-install_only.tar.gz'
+PY_URLS = (
+    f'https://registry.npmmirror.com/-/binary/python-build-standalone/{PY_TAG}/{PY_ASSET}',
+    f'https://github.com/astral-sh/python-build-standalone/releases/download/'
+    f'{PY_TAG}/{PY_ASSET}',
+)
+
+
+def download_python(sandbox: Sandbox, reporter: Reporter) -> bool:
+    """下载便携 Python（Windows 用）
+
+    为什么需要它：
+      * **从 GitHub clone 下来的沙箱里没有 Python** —— 只能借系统那个。
+        而系统 Python 不一定有 tkinter，版本还可能很老
+        （Python 3.9 自带的老 pip 解析依赖会卡死，客户就撞上了）。
+      * 下一个自带 tkinter 的便携版，图形界面就永远能起来，
+        而且跟系统装了什么彻底解耦。
+
+    只在 Windows 上做；Linux 各发行版都自带 python3，没必要再塞一份。
+    """
+    if sandbox.host != 'windows':
+        reporter.info(f'{sandbox.host} 用系统自带的 python3，不另外下载')
+        return True
+
+    target = sandbox.python_dir
+    if (target / 'python.exe').is_file():
+        reporter.info(f'便携 Python 已有：{target}')
+        return True
+
+    cache = sandbox.root / 'download'
+    cache.mkdir(parents=True, exist_ok=True)
+    archive = cache / PY_ASSET
+
+    last = None
+    for url in PY_URLS:
+        try:
+            reporter.info(f'下载便携 Python {PY_VERSION}（约 46 MB，自带 tkinter）')
+            _download_with_progress(url, archive, reporter)
+            last = None
+            break
+        except Exception as exc:
+            last = exc
+            reporter.warn(f'这个源不行（{exc}），换下一个')
+    if last is not None:
+        reporter.error('便携 Python 下载失败')
+        return False
+
+    reporter.info('解压……')
+    try:
+        shutil.rmtree(target, ignore_errors=True)
+        _extract_tool(archive, target, 1, reporter)   # 压缩包里是 python/ 一层
+    except Exception as exc:
+        reporter.error(f'解压失败：{exc}')
+        return False
+    finally:
+        try:
+            archive.unlink()
+        except OSError:
+            pass
+
+    exe = target / 'python.exe'
+    if not exe.is_file():
+        reporter.error(f'解压完没找到 {exe}')
+        return False
+
+    # 光有 python.exe 不够 —— 图形界面要 tkinter，一定要确认它在
+    try:
+        result = subprocess.run(
+            [str(exe), '-c', 'import tkinter; print(tkinter.TkVersion)'],
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            timeout=120, creationflags=NO_WINDOW)
+        if result.returncode == 0 and (result.stdout or '').strip():
+            reporter.ok(f'便携 Python 就绪：{_python_version(exe)}，'
+                        f'tkinter {result.stdout.strip()}')
+        else:
+            reporter.warn('这个 Python 没带 tkinter，图形界面可能起不来')
+            reporter.hint('（命令行照常能用）')
+    except Exception as exc:
+        reporter.warn(f'检查 tkinter 时出错：{exc}')
+    return True
+
+
 def _step(reporter: Reporter, index: int, total: int, title: str, state: str) -> None:
     mark = {'ok': '[已有]', 'new': '[下载]', 'skip': '[跳过]', 'fail': '[失败]'}.get(state, '[····]')
     color = {'ok': 'green', 'new': 'cyan', 'skip': 'yellow', 'fail': 'red'}.get(state, 'white')
@@ -774,7 +861,7 @@ def online_setup(sandbox: Sandbox, reporter: Reporter) -> bool:
     reporter.line('  全部下载到沙箱目录内，不污染这台电脑。')
     reporter.line('  中途断了不要紧，再跑一次会接着下。')
 
-    total = 4
+    total = 5
     cache = sandbox.root / 'download'
     try:
         cache.mkdir(parents=True, exist_ok=True)
@@ -790,32 +877,40 @@ def online_setup(sandbox: Sandbox, reporter: Reporter) -> bool:
         if not download_idf(sandbox, reporter):
             return False
 
-    # 2) Python 环境（建 venv + 装 ESP-IDF 的依赖）
+    # 2) 便携 Python（Windows）—— 有了它，图形界面就不依赖系统 Python 了
+    if sandbox.host == 'windows' and not sandbox.python_exe.is_file():
+        _step(reporter, 2, total, '便携 Python（自带 tkinter）', 'new')
+        if not download_python(sandbox, reporter):
+            reporter.warn('没下成，那就先用系统里那个 Python 顶着')
+    else:
+        _step(reporter, 2, total, '便携 Python', 'ok')
+
+    # 3) Python 环境（建 venv + 装 ESP-IDF 的依赖）
     #    注意：光看 venv 在不在不够 —— 客户那次就是"文件都在，但依赖导不进来"，
     #    于是 idf.py 跑不起来。这里真的 import 一遍，坏了就重装。
     if python_env_ok(sandbox):
-        _step(reporter, 2, total, 'Python 环境', 'ok')
+        _step(reporter, 3, total, 'Python 环境', 'ok')
         reporter.info(f'{sandbox.venv_dir}  ({_python_version(sandbox.venv_python)})')
     else:
         broken = sandbox.venv_python.is_file()
-        _step(reporter, 2, total, 'Python 环境', 'new')
+        _step(reporter, 3, total, 'Python 环境', 'new')
         if broken:
             reporter.warn('现有的环境不完整（依赖导不进来），重装一遍')
         if not prepare_python_env(sandbox, reporter, reinstall=broken):
             return False
 
-    # 3) 交叉工具链
+    # 4) 交叉工具链
     missing = sandbox.missing_required_tools()
     if missing:
-        _step(reporter, 3, total, f'交叉工具链（缺 {", ".join(missing)}）', 'new')
+        _step(reporter, 4, total, f'交叉工具链（缺 {", ".join(missing)}）', 'new')
         if not download_tools(sandbox, reporter):
             return False
     else:
-        _step(reporter, 3, total, '交叉工具链', 'ok')
+        _step(reporter, 4, total, '交叉工具链', 'ok')
         reporter.info(f'{human_size(dir_size(sandbox.idf_tools_dir))}')
 
-    # 4) 工程组件依赖
-    _step(reporter, 4, total, '工程组件依赖', 'new')
+    # 5) 工程组件依赖
+    _step(reporter, 5, total, '工程组件依赖', 'new')
     ensure_components(sandbox, reporter)
 
     # 收尾：把下载缓存删掉，别占地方

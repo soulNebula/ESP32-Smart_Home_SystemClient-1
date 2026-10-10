@@ -283,8 +283,11 @@ Linux 上只需要系统自带的 `python3`（一般都有）。
 
 它会自己从官方源把缺的东西下齐（走 Espressif 国内镜像，实测 2~5 MB/s）：
 
+**从 GitHub clone 下来是什么都没有的**（只有脚本），所以「配置沙箱环境」会按这个顺序补齐：
+
 | 下载什么 | 从哪下 | 多大 |
 |---|---|---|
+| **便携 Python 3.11.17**（自带 tkinter） | `registry.npmmirror.com` | 46 MB |
 | ESP-IDF 5.4.4 源码 | `dl.espressif.com` | 1.9 GB（解压后只留 357 MB） |
 | xtensa 交叉编译器 | `dl.espressif.com` | 约 250 MB |
 | CMake / Ninja / ROM 链接脚本 | `dl.espressif.com` | 约 55 MB |
