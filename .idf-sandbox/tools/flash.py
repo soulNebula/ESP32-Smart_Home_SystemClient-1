@@ -3,10 +3,10 @@
 
 用法::
 
-    python tools/sandbox/flash.py                  # 自动找串口，直接烧
-    python tools/sandbox/flash.py -p COM31         # 指定串口
-    python tools/sandbox/flash.py --erase          # 先整片擦除再烧（换固件/老出错时用）
-    python tools/sandbox/flash.py --monitor        # 烧完顺手打开串口监视器
+    python .idf-sandbox/tools/flash.py                  # 自动找串口，直接烧
+    python .idf-sandbox/tools/flash.py -p COM31         # 指定串口
+    python .idf-sandbox/tools/flash.py --erase          # 先整片擦除再烧（换固件/老出错时用）
+    python .idf-sandbox/tools/flash.py --monitor        # 烧完顺手打开串口监视器
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def run_flash(sandbox: Sandbox, reporter: Reporter, *, port: str = '', baud: int
     """烧录一次，返回 (退出码, 实际用的串口)"""
     if not firmware_ready(sandbox):
         reporter.error('还没编译过，build 目录里没有固件')
-        reporter.hint('先点"一键编译烧录"，或者单独跑一次 tools/sandbox/build.py')
+        reporter.hint('先点"一键编译烧录"，或者单独跑一次 .idf-sandbox/tools/build.py')
         return 2, ''
 
     ensure_venv(sandbox, reporter)

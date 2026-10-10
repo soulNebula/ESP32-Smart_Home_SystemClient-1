@@ -3,10 +3,10 @@
 
 用法::
 
-    python tools/sandbox/build.py            # 增量编译
-    python tools/sandbox/build.py --clean    # 先彻底清理再编译
-    python tools/sandbox/build.py -v         # 看详细编译命令
-    python tools/sandbox/build.py -- size    # "--" 后面的参数原样交给 idf.py
+    python .idf-sandbox/tools/build.py            # 增量编译
+    python .idf-sandbox/tools/build.py --clean    # 先彻底清理再编译
+    python .idf-sandbox/tools/build.py -v         # 看详细编译命令
+    python .idf-sandbox/tools/build.py -- size    # "--" 后面的参数原样交给 idf.py
 
 也可以被其它脚本当函数用：``run_build(sandbox, reporter)``
 """
@@ -181,7 +181,8 @@ def run_build(sandbox: Sandbox, reporter: Reporter, *, clean: bool = False,
         for item in missing:
             reporter.line(f'           {item}')
         reporter.hint('请把整个 .idf-sandbox 目录一起拷过来（不能只拷一部分）')
-        reporter.hint('或者运行：python tools/sandbox/prepare.py')
+        reporter.hint('图形界面上点「配置沙箱环境」就会自动补齐')
+        reporter.hint('（命令行：python .idf-sandbox/start.py prepare --download）')
         return 2
 
     problems = sandbox.project_problems()

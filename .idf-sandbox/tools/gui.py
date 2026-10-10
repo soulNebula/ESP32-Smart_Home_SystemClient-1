@@ -68,7 +68,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core import (Reporter, Sandbox, desktop_dir, host_platform,  # noqa: E402
                   human_size, init_console, list_serial_ports, load_state,
-                  open_path, run_streamed, save_state)
+                  open_path, run_streamed, save_state, serial_backend)
+# 复用 prepare 里那套"环境到底能不能用"的判断，别在两处各写一份
+from prepare import python_env_ok  # noqa: E402
 
 
 def show_error_box(title: str, message: str) -> None:
@@ -202,6 +204,11 @@ class App:
         self._build_fonts()
         self._build_ui()
         self.refresh_ports()
+        # 开窗先说清楚"现在该点哪个"：客户反馈最懵的就是这个
+        try:
+            self._startup_hint()
+        except Exception as exc:
+            self.append(f'（启动提示没出来：{exc}）', 'dim')
 
         self.root.protocol('WM_DELETE_WINDOW', self.on_close)
         self.root.after(60, self._drain)
@@ -592,12 +599,43 @@ class App:
     def _need_sandbox(self) -> bool:
         missing = self.sandbox.check_essentials()
         if missing:
-            self.append('沙箱不完整，缺少：', 'red')
+            self.append('沙箱还不完整，缺少：', 'red')
             for item in missing:
                 self.append('    ' + item, 'red')
-            self.append('点「修复沙箱」试试，或者把整个 .idf-sandbox 目录重新拷一遍。', 'dim')
+            self.append('', '')
+            self.append('点左上角那个「配置沙箱环境」，它会自己联网下回来。', 'cyan')
+            self.append('（下完会自己检查一遍，全绿就能用了）', 'dim')
+            return False
+        if not python_env_ok(self.sandbox):
+            self.append('Python 环境不完整（依赖导不进来），编译会失败。', 'red')
+            self.append('点左上角那个「配置沙箱环境」，它会检测到并重装。', 'cyan')
             return False
         return True
+
+    def _startup_hint(self) -> None:
+        """开窗先说清楚"现在该点哪个" —— 客户反馈最懵的就是这个"""
+        missing = self.sandbox.check_essentials()
+        if missing:
+            self.append('', '')
+            self.append('=' * 62, 'cyan')
+            self.append('  这个沙箱还没配置好，第一次用请先点「配置沙箱环境」', 'cyan')
+            self.append('  它会自动联网把编译器、ESP-IDF、依赖都下齐（约 10 分钟）', 'dim')
+            self.append('  全部放在 .idf-sandbox 文件夹里，不装到系统上', 'dim')
+            self.append('=' * 62, 'cyan')
+        elif not python_env_ok(self.sandbox):
+            self.append('', '')
+            self.append('  Python 环境不完整 —— 点「配置沙箱环境」会自动重装。', 'yellow')
+        elif not (self.sandbox.project / 'managed_components').is_dir():
+            self.append('', '')
+            self.append('  准备好了。第一次「一键编译烧录」会顺便下语音组件（联网一次）。',
+                        'dim')
+        else:
+            self.append('', '')
+            self.append('  一切就绪，插上板子点「一键编译烧录」就行。', 'green')
+        if not self.ports:
+            self.append('', '')
+            self.append('  没扫到串口：确认板子插好、装了驱动'
+                        '（.idf-sandbox\\drivers\\README.md）。', 'yellow')
 
     def _port(self) -> str:
         value = self.cmb_port.get()
@@ -843,10 +881,20 @@ class App:
         self.cmb_port.set(pick)
 
         if not self.ports:
-            self.append('没扫到串口。板子插好了吗？驱动装了吗'
-                        '（见 .idf-sandbox\\drivers\\README.md）？', 'yellow')
-        elif all(p.is_virtual for p in self.ports):
-            self.append('扫到的都是虚拟串口（蓝牙之类），没看到开发板。', 'yellow')
+            # 扫不到时分两种情况说清楚 —— 以前不管哪种都是同一句话，
+            # 用户设备管理器里明明有 CH343 却被告知"没扫到"，很懵
+            self.append('没扫到串口。', 'yellow')
+            self.append('   1) 换一根能传数据的 USB 线（纯充电线不行）', 'dim')
+            self.append('   2) 板子电源灯亮了吗', 'dim')
+            self.append('   3) 装驱动：.idf-sandbox\\drivers\\README.md', 'dim')
+            self.append('   4) 还是不行就点「环境体检」，把结果发出来', 'dim')
+        else:
+            how = {'pyserial': 'pyserial', 'system': '系统接口'}.get(
+                serial_backend(), serial_backend())
+            self.append(f'扫到 {len(self.ports)} 个串口（用{how}扫的）。', 'dim')
+            if all(p.is_virtual for p in self.ports):
+                self.append('不过这些看着都像虚拟串口（蓝牙之类），没看到开发板。',
+                            'yellow')
 
     def open_logs(self) -> None:
         try:

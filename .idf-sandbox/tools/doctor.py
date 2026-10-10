@@ -5,8 +5,8 @@
 
 用法::
 
-    python tools/sandbox/doctor.py            # 体检
-    python tools/sandbox/doctor.py --ports    # 顺便列串口
+    python .idf-sandbox/tools/doctor.py            # 体检
+    python .idf-sandbox/tools/doctor.py --ports    # 顺便列串口
 """
 
 from __future__ import annotations
@@ -187,8 +187,9 @@ def main(argv: list[str] | None = None) -> int:
         reporter.title('体检结论')
         if problems:
             reporter.error('有问题的地方：' + '、'.join(problems))
-            reporter.hint('缺文件的话，把整个 .idf-sandbox 目录重新拷一遍')
-            reporter.hint('或者运行：python tools/sandbox/prepare.py')
+            reporter.hint('缺文件的话，点「配置沙箱环境」让它自己下回来')
+            reporter.hint('图形界面上点「配置沙箱环境」就会自动补齐')
+            reporter.hint('（命令行：python .idf-sandbox/start.py prepare --download）')
             code = 1
         else:
             reporter.ok('沙箱完全正常，点"一键编译烧录"就能干活')

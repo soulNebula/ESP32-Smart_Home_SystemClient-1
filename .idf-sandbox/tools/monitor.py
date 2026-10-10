@@ -11,10 +11,10 @@
 
 用法::
 
-    python tools/sandbox/monitor.py                # 自动挑串口
-    python tools/sandbox/monitor.py -p COM31       # 指定串口
-    python tools/sandbox/monitor.py --list         # 只列串口
-    python tools/sandbox/monitor.py --send status --seconds 10
+    python .idf-sandbox/tools/monitor.py                # 自动挑串口
+    python .idf-sandbox/tools/monitor.py -p COM31       # 指定串口
+    python .idf-sandbox/tools/monitor.py --list         # 只列串口
+    python .idf-sandbox/tools/monitor.py --send status --seconds 10
 """
 
 from __future__ import annotations

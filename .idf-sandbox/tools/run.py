@@ -5,11 +5,11 @@
 
 用法::
 
-    python tools/sandbox/run.py                 # 编译 + 烧录 + 看串口
-    python tools/sandbox/run.py -p COM31        # 指定串口
-    python tools/sandbox/run.py --erase         # 先整片擦除再烧（换固件、老出错时用）
-    python tools/sandbox/run.py --build-only    # 只编译，不烧录
-    python tools/sandbox/run.py --monitor-only  # 只看串口，不编译不烧录
+    python .idf-sandbox/tools/run.py                 # 编译 + 烧录 + 看串口
+    python .idf-sandbox/tools/run.py -p COM31        # 指定串口
+    python .idf-sandbox/tools/run.py --erase         # 先整片擦除再烧（换固件、老出错时用）
+    python .idf-sandbox/tools/run.py --build-only    # 只编译，不烧录
+    python .idf-sandbox/tools/run.py --monitor-only  # 只看串口，不编译不烧录
 """
 
 from __future__ import annotations
@@ -89,7 +89,8 @@ def main(argv: list[str] | None = None) -> int:
             for item in missing:
                 reporter.line(f'           {item}')
             reporter.hint('把整个 .idf-sandbox 目录一起拷过来（不能只拷一部分）')
-            reporter.hint('或者运行：python tools/sandbox/prepare.py')
+            reporter.hint('图形界面上点「配置沙箱环境」就会自动补齐')
+            reporter.hint('（命令行：python .idf-sandbox/start.py prepare --download）')
             return 2
         ensure_venv(sandbox, reporter)
         reporter.ok(f'沙箱完好（{sandbox.idf_version}，目标 {sandbox.chip_target}）')

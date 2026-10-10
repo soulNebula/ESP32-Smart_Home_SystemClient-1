@@ -10,9 +10,9 @@
 
 三种用法::
 
-    python tools/sandbox/prepare.py                      # 只体检，看缺什么
-    python tools/sandbox/prepare.py --repair             # 从本机已装的 ESP-IDF 补齐
-    python tools/sandbox/prepare.py --download           # 缺什么就从网上下什么
+    python .idf-sandbox/tools/prepare.py                      # 只体检，看缺什么
+    python .idf-sandbox/tools/prepare.py --repair             # 从本机已装的 ESP-IDF 补齐
+    python .idf-sandbox/tools/prepare.py --download           # 缺什么就从网上下什么
 
 ``--repair`` 会自己去找本机的 ESP-IDF：
 
@@ -453,24 +453,72 @@ def download_tools(sandbox: Sandbox, reporter: Reporter) -> bool:
     return _run_streamed(cmd, env, sandbox.idf_dir, reporter)
 
 
-def prepare_python_env(sandbox: Sandbox, reporter: Reporter) -> bool:
-    """把这一套平台的 Python 环境准备好（主要给 Linux 用）
+PY_PROBE = ('import click, serial, cryptography, yaml, elftools, '
+            'kconfiglib, esp_idf_monitor; print("ok")')
 
-    Windows 侧是把现成的 site-packages 拷过来的，不用 pip；
-    Linux 侧第一次得建个虚拟环境再把 ESP-IDF 的依赖装上（要联网）。
+
+def python_env_ok(sandbox: Sandbox) -> bool:
+    """现有 Python 环境真的能用吗（光看文件在不在不够）"""
+    if not sandbox.venv_python.is_file():
+        return False
+    try:
+        result = subprocess.run(
+            [str(sandbox.venv_python), '-c', PY_PROBE],
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            timeout=180, creationflags=NO_WINDOW)
+        return result.returncode == 0 and 'ok' in (result.stdout or '')
+    except Exception:
+        return False
+
+
+def prepare_python_env(sandbox: Sandbox, reporter: Reporter,
+                       reinstall: bool = False) -> bool:
+    """把这一套平台的 Python 环境准备好
+
+    用 **ESP-IDF 官方的 install-python-env**，而不是自己 `pip install -r`：
+
+    * 官方会带上 ``constraints.txt`` 的版本约束，装出来的组合是验证过的。
+      自己装很容易出现"包装上了但 idf.py 跑不起来"（客户就撞上了这个）
+    * 它默认走 ``dl.espressif.com`` 的 PyPI 镜像，国内不用翻墙也快
+
+    官方那条路走不通，再退回自己建 venv + pip（带清华镜像兜底）。
     """
-    if sandbox.venv_python.is_file():
-        reporter.info(f'Python 环境已就绪：{sandbox.venv_dir}')
-        return True
+    if sandbox.venv_python.is_file() and not reinstall:
+        if python_env_ok(sandbox):
+            reporter.info(f'Python 环境已就绪：{sandbox.venv_dir}')
+            return True
+        reporter.warn('现有 Python 环境不完整，重装一次')
+        reinstall = True
 
     base = sandbox.python_exe
     if not base.is_file():
         base = Path(sys.executable)
-        reporter.info(f'沙箱没带 Python，用系统的：{base}')
+        reporter.info(f'沙箱没带 Python，用系统的：{base}  '
+                      f'({_python_version(base)})')
     else:
         reporter.info(f'用沙箱自带的 Python：{base}')
 
-    reporter.info(f'创建虚拟环境：{sandbox.venv_dir}')
+    # ---- 首选：官方 install-python-env ----
+    idf_tools = sandbox.idf_dir / 'tools' / 'idf_tools.py'
+    if idf_tools.is_file():
+        reporter.info('调用官方 install-python-env（带版本约束 + 国内 PyPI 镜像）')
+        if reinstall:
+            shutil.rmtree(sandbox.venv_dir, ignore_errors=True)
+        sandbox.venv_dir.parent.mkdir(parents=True, exist_ok=True)
+        env = sandbox.build_env()
+        env['IDF_PYTHON_ENV_PATH'] = str(sandbox.venv_dir)
+        env['IDF_PYTHON_CHECK_CONSTRAINTS'] = 'yes'
+        cmd = [str(base), str(idf_tools), 'install-python-env', '--features', 'core']
+        if reinstall:
+            cmd.append('--reinstall')
+        if _run_streamed(cmd, env, sandbox.idf_dir, reporter, tail=15):
+            if python_env_ok(sandbox):
+                return True
+            reporter.warn('官方装完了但依赖还是导不进来，换备用方式再试')
+
+    # ---- 备用：自己建 venv + pip ----
+    reporter.info('改用备用方式：自己建虚拟环境 + pip 装依赖')
+    shutil.rmtree(sandbox.venv_dir, ignore_errors=True)
     result = subprocess.run([str(base), '-m', 'venv', '--system-site-packages',
                              str(sandbox.venv_dir)],
                             capture_output=True, text=True, encoding='utf-8',
@@ -486,33 +534,30 @@ def prepare_python_env(sandbox: Sandbox, reporter: Reporter) -> bool:
     req = sandbox.idf_dir / 'tools' / 'requirements' / 'requirements.core.txt'
     if not req.is_file():
         reporter.warn(f'找不到依赖清单 {req}，跳过装包')
-        return True
+        return python_env_ok(sandbox)
 
     env = sandbox.build_env()
     pip = [str(sandbox.venv_python), '-m', 'pip', 'install',
            '--disable-pip-version-check', '--no-color', '--progress-bar', 'off']
     reporter.info('安装 ESP-IDF 的 Python 依赖（第一次要联网，几分钟）')
-    # 先走默认源；国内网络慢的话换清华镜像再来一次
+    # 官方镜像 -> 清华 -> 默认源，总有一个能通
     mirrors = [
-        [],
+        ['-i', 'https://dl.espressif.com/pypi'],
         ['-i', 'https://pypi.tuna.tsinghua.edu.cn/simple'],
+        [],
     ]
-    ok = False
     for extra in mirrors:
         if extra:
-            reporter.warn('默认源太慢，换清华镜像重试……')
-        result = subprocess.run(pip + extra + ['-r', str(req)], env=env,
-                                cwd=str(sandbox.idf_dir),
+            reporter.info(f'用镜像 {extra[1]}')
+        result = subprocess.run(pip + extra + ['--upgrade', '-r', str(req)],
+                                env=env, cwd=str(sandbox.idf_dir),
                                 creationflags=NO_WINDOW)
-        if result.returncode == 0:
-            ok = True
-            break
-    if not ok:
-        reporter.error('pip install 失败')
-        reporter.hint('检查网络；也可以自己指定镜像：')
-        reporter.hint('  set PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple')
-        return False
-    return True
+        if result.returncode == 0 and python_env_ok(sandbox):
+            return True
+    reporter.error('装依赖失败')
+    reporter.hint('检查网络；也可以自己指定镜像再试：')
+    reporter.hint('  set PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple')
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -572,27 +617,27 @@ def self_check(sandbox: Sandbox, reporter: Reporter) -> bool:
         problems.append('缺 ESP-IDF 源码')
         reporter.error('ESP-IDF 源码        缺')
 
-    # 2) Python 环境真的能 import
-    if sandbox.venv_python.is_file():
-        probe = ('import click, serial, cryptography, yaml, elftools, '
-                 'kconfiglib, esp_idf_monitor; print("ok")')
+    # 2) Python 环境真的能 import（不是只看文件在不在）
+    if python_env_ok(sandbox):
+        reporter.ok(f'Python 环境         {_python_version(sandbox.venv_python)}')
+    elif sandbox.venv_python.is_file():
+        problems.append('Python 依赖装得不全')
+        reporter.error('Python 依赖         导入失败')
         try:
-            result = subprocess.run(
-                [str(sandbox.venv_python), '-c', probe],
-                capture_output=True, text=True, encoding='utf-8',
-                errors='replace', timeout=120, creationflags=NO_WINDOW)
-            if result.returncode == 0 and 'ok' in result.stdout:
-                reporter.ok(f'Python 环境         {_python_version(sandbox.venv_python)}')
-            else:
-                tail = (result.stderr or '').strip().splitlines()
-                problems.append('Python 依赖装得不全')
-                reporter.error('Python 依赖         ' + (tail[-1][:60] if tail else '导入失败'))
-        except Exception as exc:
-            problems.append(f'Python 环境跑不起来：{exc}')
-            reporter.error(f'Python 环境         {exc}')
+            result = subprocess.run([str(sandbox.venv_python), '-c', PY_PROBE],
+                                    capture_output=True, text=True, encoding='utf-8',
+                                    errors='replace', timeout=120,
+                                    creationflags=NO_WINDOW)
+            tail = (result.stderr or '').strip().splitlines()
+            for line in tail[-4:]:
+                reporter.hint(line[:100])
+        except Exception:
+            pass
+        reporter.hint('点「配置沙箱环境」会检测到并自动重装')
     else:
         problems.append('没有 Python 环境')
         reporter.error('Python 环境         缺')
+        reporter.hint('点「配置沙箱环境」会装好')
 
     # 3) 交叉编译器真的能跑
     gcc = None
@@ -636,9 +681,23 @@ def self_check(sandbox: Sandbox, reporter: Reporter) -> bool:
                 reporter.ok(f'idf.py 端到端       {text.splitlines()[0][:58]}')
             else:
                 problems.append('idf.py 跑不起来')
-                for line in text.splitlines()[-3:]:
-                    reporter.hint(line[:90])
-                reporter.error('idf.py 端到端       失败')
+                reporter.error(f'idf.py 端到端       失败（退出码 {result.returncode}）')
+                # 把 idf.py 真正吐出来的东西原样贴出来 ——
+                # 光说"失败"用户没法反馈，我们也无从下手（客户那次就卡在这）
+                shown = [ln for ln in text.splitlines() if ln.strip()]
+                if shown:
+                    reporter.line('          ↓ idf.py 的原始输出（反馈问题时把这段一起发来）')
+                    for line in shown[-12:]:
+                        reporter.hint(line[:110])
+                else:
+                    reporter.hint('（idf.py 一个字都没输出，通常是被杀毒软件拦了）')
+                reporter.line('')
+                reporter.hint('常见原因和对应做法：')
+                reporter.hint('  · 依赖没装全 → 再点一次「配置沙箱环境」'
+                              '（它会检测到并重装）')
+                reporter.hint('  · 杀毒软件拦截 python.exe → 把 .idf-sandbox 加进白名单')
+                reporter.hint(f'  · 想自己看详细报错，手动跑：')
+                reporter.hint(f'      {sandbox.venv_python} {sandbox.idf_py} --version')
         except Exception as exc:
             problems.append(f'idf.py 跑不起来：{exc}')
             reporter.error(f'idf.py 端到端       {exc}')
@@ -697,12 +756,17 @@ def online_setup(sandbox: Sandbox, reporter: Reporter) -> bool:
             return False
 
     # 2) Python 环境（建 venv + 装 ESP-IDF 的依赖）
-    if sandbox.venv_python.is_file():
+    #    注意：光看 venv 在不在不够 —— 客户那次就是"文件都在，但依赖导不进来"，
+    #    于是 idf.py 跑不起来。这里真的 import 一遍，坏了就重装。
+    if python_env_ok(sandbox):
         _step(reporter, 2, total, 'Python 环境', 'ok')
-        reporter.info(str(sandbox.venv_dir))
+        reporter.info(f'{sandbox.venv_dir}  ({_python_version(sandbox.venv_python)})')
     else:
+        broken = sandbox.venv_python.is_file()
         _step(reporter, 2, total, 'Python 环境', 'new')
-        if not prepare_python_env(sandbox, reporter):
+        if broken:
+            reporter.warn('现有的环境不完整（依赖导不进来），重装一遍')
+        if not prepare_python_env(sandbox, reporter, reinstall=broken):
             return False
 
     # 3) 交叉工具链

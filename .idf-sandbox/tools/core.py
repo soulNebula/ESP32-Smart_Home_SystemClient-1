@@ -822,15 +822,21 @@ class Sandbox:
         # 临时目录也搬进沙箱。有些电脑（公司电脑、装了杀毒软件的）不让往系统 %TEMP% 写，
         # 交叉编译器一旦建不了临时文件就会报 "Cannot create temporary file"；
         # 顺带好处是沙箱真的就是一个盒子，不在系统里留垃圾。
+        #
+        # 但不能一根筋：沙箱放在只读盘、网络盘、或者被安全软件锁住的目录时，
+        # 沙箱的 tmp 自己就写不进去 —— 那就老老实实用系统默认的 %TEMP%，
+        # 别因为这点事让整个编译起不来。
         try:
             tmp_dir = self.root / 'tmp'
             tmp_dir.mkdir(parents=True, exist_ok=True)
+            if not _writable(tmp_dir / 'probe.tmp'):
+                raise OSError(f'{tmp_dir} 写不进去')
             env['TMP'] = str(tmp_dir)       # Windows
             env['TEMP'] = str(tmp_dir)
             env['TMPDIR'] = str(tmp_dir)    # Linux / macOS
             _tidy_tmp(tmp_dir)
         except OSError:
-            pass
+            pass       # 保持系统默认的临时目录
 
         if extra:
             env.update({k: str(v) for k, v in extra.items()})
@@ -1101,19 +1107,80 @@ class SerialPortInfo:
         return f'<{self.device} {self.friendly}>'
 
 
-def list_serial_ports() -> list[SerialPortInfo]:
-    """扫串口（依赖 pyserial，沙箱自带的）"""
+def _pyserial_ports() -> list[SerialPortInfo]:
+    """用 pyserial 扫（信息最全：描述、VID 都有）"""
     ports: list[SerialPortInfo] = []
     try:
         from serial.tools import list_ports
     except ImportError:
         return ports
+    try:
+        for item in list_ports.comports():
+            vid = 0
+            if item.vid is not None:
+                vid = int(item.vid)
+            ports.append(SerialPortInfo(item.device, item.description or '',
+                                        item.hwid or '', vid))
+    except Exception:
+        return []
+    return ports
 
-    for item in list_ports.comports():
-        vid = 0
-        if item.vid is not None:
-            vid = int(item.vid)
-        ports.append(SerialPortInfo(item.device, item.description or '', item.hwid or '', vid))
+
+def _system_ports() -> list[SerialPortInfo]:
+    """不靠 pyserial，直接问操作系统要串口列表
+
+    为什么必须有这条后路：**GUI 可能是用系统 Python 跑的**
+    （沙箱里的便携 Python 没拷全的时候就是这样），而系统 Python 里
+    不一定装了 pyserial。以前这种情况 `import serial` 一失败就静默返回空列表 ——
+    用户看到的是"没扫到串口"，可他设备管理器里明明有 CH343（真遇到过）。
+    """
+    found: list[SerialPortInfo] = []
+    if os.name == 'nt':
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r'HARDWARE\DEVICEMAP\SERIALCOMM') as key:
+                index = 0
+                while True:
+                    try:
+                        _name, value, _kind = winreg.EnumValue(key, index)
+                    except OSError:
+                        break
+                    index += 1
+                    found.append(SerialPortInfo(str(value), '串口设备', '', 0))
+        except OSError:
+            pass
+    else:
+        import glob as _glob
+        # Linux/macOS：直接看设备文件，一个依赖都不用
+        for pattern in ('/dev/ttyUSB*', '/dev/ttyACM*', '/dev/ttyS*',
+                        '/dev/cu.usb*', '/dev/cu.SLAB*', '/dev/cu.wch*'):
+            for path in sorted(_glob.glob(pattern)):
+                found.append(SerialPortInfo(path, os.path.basename(path), '', 0))
+    return found
+
+
+# 上次扫串口用的是哪条路（图形界面会显示出来，方便排查）
+SERIAL_BACKEND = ''
+
+
+def serial_backend() -> str:
+    """上次 list_serial_ports() 用的是哪条路：pyserial / system / 空"""
+    return SERIAL_BACKEND
+
+
+def list_serial_ports() -> list[SerialPortInfo]:
+    """扫串口
+
+    先走 pyserial（信息全），它不在或者扫不到就走系统接口（一个依赖都不要）。
+    """
+    global SERIAL_BACKEND
+    ports = _pyserial_ports()
+    if ports:
+        SERIAL_BACKEND = 'pyserial'
+    else:
+        ports = _system_ports()
+        SERIAL_BACKEND = 'system' if ports else ''
     ports.sort(key=lambda p: (p.rank, _port_number(p.device)))
     return ports
 
