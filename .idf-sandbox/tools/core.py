@@ -834,6 +834,12 @@ class Sandbox:
             env['TMP'] = str(tmp_dir)       # Windows
             env['TEMP'] = str(tmp_dir)
             env['TMPDIR'] = str(tmp_dir)    # Linux / macOS
+            # pip 的缓存默认在 %LOCALAPPDATA%\pip\cache —— 那既"污染了用户电脑"，
+            # 又可能在受限环境里被拒绝访问（实测装 esptool 时就栽在这儿：
+            # "Building wheel for esptool failed: [WinError 5] 拒绝访问"）。
+            # 关进沙箱里，两边都解决。
+            env['PIP_CACHE_DIR'] = str(tmp_dir / 'pip-cache')
+            env['XDG_CACHE_HOME'] = str(tmp_dir)
             _tidy_tmp(tmp_dir)
         except OSError:
             pass       # 保持系统默认的临时目录

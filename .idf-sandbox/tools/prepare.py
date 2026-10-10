@@ -415,12 +415,12 @@ def _run_streamed(cmd: list, env: dict, cwd: Path, reporter: Reporter,
         recent.append(text)
         if len(recent) > tail:
             recent.pop(0)
-        reporter.raw(f'    {text[:110]}\n')
+        reporter.raw(f'    {text[:200]}\n')
     code = proc.wait()
     if code != 0:
         reporter.error(f'子进程退出码 {code}，最后几行：')
         for line in recent[-tail:]:
-            reporter.hint(line[:110])
+            reporter.hint(line[:200])
     return code == 0
 
 
@@ -471,6 +471,44 @@ def python_env_ok(sandbox: Sandbox) -> bool:
         return False
 
 
+def fresh_venv_with_new_pip(sandbox: Sandbox, base: Path,
+                            reporter: Reporter) -> bool:
+    """先自己把虚拟环境建出来，并在里面把 pip 升到新版
+
+    **为什么非做不可**（客户那次就是栽在这儿）：
+    Python 3.9.13 自带的是 pip 22.0.4，那还是老解析器。碰上 ESP-IDF 的
+    constraints 文件，依赖解析会退化成指数级回溯 —— 实测 CPU 跑满 30 分钟
+    一点没动，pip 缓存涨到 3.8 GB 还没装完一个包。用户看到的就是"卡死了"。
+
+    新版 pip（23+）解同一套约束只要几秒。所以：**先升级 pip，再装依赖**。
+    而且是在沙箱自己的 venv 里升级 —— 不动用户的系统 Python。
+    """
+    reporter.info(f'建虚拟环境：{sandbox.venv_dir}')
+    shutil.rmtree(sandbox.venv_dir, ignore_errors=True)
+    result = subprocess.run([str(base), '-m', 'venv', str(sandbox.venv_dir)],
+                            capture_output=True, text=True, encoding='utf-8',
+                            errors='replace', creationflags=NO_WINDOW)
+    if result.returncode != 0 or not sandbox.venv_python.is_file():
+        reporter.error('创建虚拟环境失败')
+        for line in ((result.stderr or '') + (result.stdout or '')).splitlines()[-6:]:
+            reporter.hint(line)
+        if sandbox.host != 'windows':
+            reporter.hint('Debian/Ubuntu 上可能需要先装：sudo apt install python3-venv')
+        return False
+
+    old = _python_version(sandbox.venv_python)
+    env = sandbox.build_env()
+    for extra in (['-i', 'https://pypi.tuna.tsinghua.edu.cn/simple'], []):
+        if _run_streamed(
+                [str(sandbox.venv_python), '-m', 'pip', 'install', '--upgrade',
+                 'pip', '--disable-pip-version-check', '--no-color',
+                 '--progress-bar', 'off'] + extra,
+                env, sandbox.idf_dir, reporter, tail=6):
+            break
+    reporter.info('venv 就绪（Python %s + 新版 pip）' % old)
+    return True
+
+
 def prepare_python_env(sandbox: Sandbox, reporter: Reporter,
                        reinstall: bool = False) -> bool:
     """把这一套平台的 Python 环境准备好
@@ -498,58 +536,55 @@ def prepare_python_env(sandbox: Sandbox, reporter: Reporter,
     else:
         reporter.info(f'用沙箱自带的 Python：{base}')
 
-    # ---- 首选：官方 install-python-env ----
+    # 自己建 venv 并升级 pip（都在沙箱里，不碰系统 Python）
+    if not fresh_venv_with_new_pip(sandbox, base, reporter):
+        return False
+
+    # ---- 首选：官方 install-python-env（复用刚建好的 venv）----
     idf_tools = sandbox.idf_dir / 'tools' / 'idf_tools.py'
     if idf_tools.is_file():
-        reporter.info('调用官方 install-python-env（带版本约束 + 国内 PyPI 镜像）')
-        if reinstall:
-            shutil.rmtree(sandbox.venv_dir, ignore_errors=True)
-        sandbox.venv_dir.parent.mkdir(parents=True, exist_ok=True)
+        reporter.info('调用官方 install-python-env（带官方版本约束 + 国内 PyPI 镜像）')
         env = sandbox.build_env()
         env['IDF_PYTHON_ENV_PATH'] = str(sandbox.venv_dir)
         env['IDF_PYTHON_CHECK_CONSTRAINTS'] = 'yes'
-        cmd = [str(base), str(idf_tools), 'install-python-env', '--features', 'core']
-        if reinstall:
-            cmd.append('--reinstall')
+        # 用 venv 里那个**新版 pip** 来解释 idf_tools.py —— 老 pip 会卡死
+        cmd = [str(sandbox.venv_python), str(idf_tools),
+               'install-python-env', '--features', 'core']
         if _run_streamed(cmd, env, sandbox.idf_dir, reporter, tail=15):
             if python_env_ok(sandbox):
                 return True
             reporter.warn('官方装完了但依赖还是导不进来，换备用方式再试')
+        else:
+            # 常见原因：约束文件把某个包钉死在"没有对应 Python 版本的 wheel"的版本上，
+            # pip 只能现场编译，而编译又可能失败（实测 esptool 4.12.0 在 Python 3.9
+            # 上就是这样）。这时让官方安装器**放开版本约束**再装一次 ——
+            # 还是走官方流程，只是允许它挑有 wheel 的版本。
+            reporter.warn('带版本约束装不上（多半是某个包没有对应 Python 版本的 wheel）')
+            reporter.info('放开约束，用官方安装器再试一次')
+            if _run_streamed(cmd + ['--no-constraints'], env, sandbox.idf_dir,
+                             reporter, tail=15):
+                if python_env_ok(sandbox):
+                    return True
+            reporter.warn('官方路径还是不行，换最后一种方式')
 
-    # ---- 备用：自己建 venv + pip ----
-    reporter.info('改用备用方式：自己建虚拟环境 + pip 装依赖')
-    shutil.rmtree(sandbox.venv_dir, ignore_errors=True)
-    result = subprocess.run([str(base), '-m', 'venv', '--system-site-packages',
-                             str(sandbox.venv_dir)],
-                            capture_output=True, text=True, encoding='utf-8',
-                            errors='replace', creationflags=NO_WINDOW)
-    if result.returncode != 0 or not sandbox.venv_python.is_file():
-        reporter.error('创建虚拟环境失败')
-        for line in ((result.stderr or '') + (result.stdout or '')).splitlines()[-6:]:
-            reporter.hint(line)
-        if sandbox.host != 'windows':
-            reporter.hint('Debian/Ubuntu 上可能需要先装：sudo apt install python3-venv')
-        return False
-
+    # ---- 备用：自己 pip 装 requirements ----
+    reporter.info('备用方式：直接 pip 装 requirements.core.txt')
     req = sandbox.idf_dir / 'tools' / 'requirements' / 'requirements.core.txt'
     if not req.is_file():
-        reporter.warn(f'找不到依赖清单 {req}，跳过装包')
+        reporter.warn(f'找不到依赖清单 {req}')
         return python_env_ok(sandbox)
 
     env = sandbox.build_env()
     pip = [str(sandbox.venv_python), '-m', 'pip', 'install',
-           '--disable-pip-version-check', '--no-color', '--progress-bar', 'off']
-    reporter.info('安装 ESP-IDF 的 Python 依赖（第一次要联网，几分钟）')
+           '--disable-pip-version-check', '--no-color', '--progress-bar', 'off',
+           '--upgrade']
     # 官方镜像 -> 清华 -> 默认源，总有一个能通
-    mirrors = [
-        ['-i', 'https://dl.espressif.com/pypi'],
-        ['-i', 'https://pypi.tuna.tsinghua.edu.cn/simple'],
-        [],
-    ]
-    for extra in mirrors:
+    for extra in (['-i', 'https://dl.espressif.com/pypi'],
+                  ['-i', 'https://pypi.tuna.tsinghua.edu.cn/simple'],
+                  []):
         if extra:
             reporter.info(f'用镜像 {extra[1]}')
-        result = subprocess.run(pip + extra + ['--upgrade', '-r', str(req)],
+        result = subprocess.run(pip + extra + ['-r', str(req)],
                                 env=env, cwd=str(sandbox.idf_dir),
                                 creationflags=NO_WINDOW)
         if result.returncode == 0 and python_env_ok(sandbox):
@@ -688,7 +723,7 @@ def self_check(sandbox: Sandbox, reporter: Reporter) -> bool:
                 if shown:
                     reporter.line('          ↓ idf.py 的原始输出（反馈问题时把这段一起发来）')
                     for line in shown[-12:]:
-                        reporter.hint(line[:110])
+                        reporter.hint(line[:200])
                 else:
                     reporter.hint('（idf.py 一个字都没输出，通常是被杀毒软件拦了）')
                 reporter.line('')
