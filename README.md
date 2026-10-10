@@ -516,7 +516,7 @@ python .idf-sandbox\start.py --project D:\我的另一个工程   :: 图形界�
 换工程时沙箱还会自动处理"`build/` 是别的路径/别的 Python 编的"这种情况，
 检测到就清理重建，不会报莫名其妙的 cmake 错误。
 
-> **用哪个 Python 跑都行。** 脚本兼容 **Python 3.9 ~ 3.14**，
+> **用哪个 Python 跑都行。** 脚本兼容 **Python 3.9 ~ 3.15**，
 > 系统里装的是 3.9、3.11 还是别的版本都不影响。
 > 真正编译固件的始终是沙箱里那个 3.11.2，跟系统 Python 是哪个版本没关系。
 
@@ -528,7 +528,7 @@ python .idf-sandbox\start.py --project D:\我的另一个工程   :: 图形界�
 
 这样做的好处：
 
-- 不管系统里是 3.9 还是 3.14，最终跑的都是沙箱那套，行为统一
+- 不管系统里是 3.9 还是 3.15，最终跑的都是沙箱那套，行为统一
 - 图形界面需要的 tkinter 一定有（沙箱里已经补进去了）
 - 换台电脑、换个 Python 版本，结果一样，出问题好排查
 
@@ -539,7 +539,7 @@ C:\...\.idf-sandbox\python\pythonw.exe  C:\...\.idf-sandbox\start.py gui
 ```
 
 万一沙箱 Python 没了，它就老实待在当前解释器里跑 —— 这些脚本本身兼容
-3.9 ~ 3.14，照样能用。想看看实际用的是哪个：
+3.9 ~ 3.15，照样能用。想看看实际用的是哪个：
 
 ```bat
 python .idf-sandbox\start.py doctor        :: 会打印"跑本脚本的 Python"
@@ -631,7 +631,8 @@ powershell -ExecutionPolicy Bypass -File tools\build\build.ps1 -Task build
 
 注意：
 > `.zst` **不要解压**，直接指给安装器，解压了会失败
-> 离线安装对 Python 版本有要求：**只支持 3.11~3.14**
+> **官方安装器**对 Python 版本有要求：只支持 3.11~3.14
+> （这是它的限制，跟本沙箱无关 —— 沙箱的脚本 3.9~3.15 都能跑）
 
 
 

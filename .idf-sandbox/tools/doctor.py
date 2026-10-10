@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# 支持 Python 3.9 ~ 3.14（见 core.py 里的说明）
+# 支持 Python 3.9 ~ 3.15（见 core.py 里的说明）
 if sys.version_info < (3, 9):
     raise SystemExit('[X] 需要 Python 3.9 或更高版本，当前是 ' + sys.version.split()[0]
                      + '\n    请改用沙箱自带的解释器：.idf-sandbox\\python\\python.exe')
@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         supported = (3, 9) <= version[:2] <= (3, 14)
         item(OK if supported else WARN, '跑本脚本的 Python',
              f'{sys.version.split()[0]}  ({sys.executable})')
-        item(OK, '脚本兼容范围', 'Python 3.9 ~ 3.14')
+        item(OK, '脚本兼容范围', 'Python 3.9 ~ 3.15')
         item(OK if sandbox.python_exe.is_file() else BAD, '沙箱便携 Python',
              str(sandbox.python_exe) if sandbox.python_exe.is_file() else '不见了')
         if sandbox.python_exe.is_file():

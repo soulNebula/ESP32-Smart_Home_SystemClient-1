@@ -30,7 +30,7 @@ import sys
 import time
 from pathlib import Path
 
-# 全部脚本都支持 Python 3.9 ~ 3.14。
+# 全部脚本都支持 Python 3.9 ~ 3.15。
 # 能这么写是因为每个文件都带了 `from __future__ import annotations`，
 # 注解里的 `Path | None`、`list[str]` 这类写法不会被求值，3.9 上也照样跑。
 # 这里兜一道底：更老的解释器直接给一句人话，而不是抛一堆看不懂的 traceback。

@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-# 支持 Python 3.9 ~ 3.14（见 core.py 里的说明）
+# 支持 Python 3.9 ~ 3.15（见 core.py 里的说明）
 if sys.version_info < (3, 9):
     raise SystemExit('[X] 需要 Python 3.9 或更高版本，当前是 ' + sys.version.split()[0]
                      + '\n    请改用沙箱自带的解释器：.idf-sandbox\\python\\python.exe')

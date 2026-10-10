@@ -19,7 +19,7 @@
 沙箱里那个便携 Python 原本没带 tkinter，工程里已经把它补进 `.idf-sandbox/python`
 了（Tcl/Tk 8.6，约 7 MB），所以客户机什么都不用装也能开这个窗口。
 
-兼容 Python 3.9 ~ 3.14。
+兼容 Python 3.9 ~ 3.15（3.15 实测过）。
 """
 
 from __future__ import annotations

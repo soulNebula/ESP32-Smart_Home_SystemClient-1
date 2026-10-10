@@ -39,7 +39,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-# 支持 Python 3.9 ~ 3.14（见 core.py 里的说明）。
+# 支持 Python 3.9 ~ 3.15（见 core.py 里的说明）。
 # 这个脚本最需要向下兼容：沙箱 Python 没了的机器，只能靠系统里的 Python 来修沙箱。
 if sys.version_info < (3, 9):
     raise SystemExit('[X] 需要 Python 3.9 或更高版本，当前是 ' + sys.version.split()[0]
