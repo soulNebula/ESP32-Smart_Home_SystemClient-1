@@ -315,7 +315,7 @@ class App:
                                      font=self.f_ui)
         self.cmb_port.pack(side='left', padx=(6, 4))
         ttk.Button(row3, text='刷新', width=5, command=self.refresh_ports).pack(side='left')
-        ttk.Label(row3, text='波特率').pack(side='left', padx=(int(10 * self.scale), 0))
+        ttk.Label(row3, text='监视波特率').pack(side='left', padx=(int(10 * self.scale), 0))
         self.cmb_baud = ttk.Combobox(row3, width=8, state='readonly',
                                      values=list(BAUD_LIST), font=self.f_ui)
         self.cmb_baud.set('115200')

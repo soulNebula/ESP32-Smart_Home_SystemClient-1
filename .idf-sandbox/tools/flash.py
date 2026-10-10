@@ -46,9 +46,33 @@ def firmware_ready(sandbox: Sandbox) -> bool:
     return (sandbox.project / 'build' / 'flasher_args.json').is_file()
 
 
+# 烧录波特率：先快后慢。快的那档绝大多数板子没问题，但**有些 USB 转串口芯片
+# （CH343 / CH340 这类）在 460800 下会把数据写坏**，esptool 报
+# "MD5 of file does not match data in flash" —— 写进去了，回读一对发现不对。
+# 用户看到这种报错完全不知道该干嘛，所以脚本自己降速重试。
+BAUD_LADDER = (460800, 115200)
+
+# 这些字样说明"数据没写对"，值得降速重来；别的错误（串口被占用之类）重试没用
+WRITE_ERROR_MARKS = (
+    'md5 of file does not match',
+    'failed to write to target flash',
+    'flash write error',
+    'invalid header',
+    'the chip stopped responding',
+)
+
+
+def looks_like_write_error(tail: list[str]) -> bool:
+    text = '\n'.join(tail).lower()
+    return any(mark in text for mark in WRITE_ERROR_MARKS)
+
+
 def run_flash(sandbox: Sandbox, reporter: Reporter, *, port: str = '', baud: int = 0,
               erase: bool = False) -> tuple[int, str]:
-    """烧录一次，返回 (退出码, 实际用的串口)"""
+    """烧录一次，返回 (退出码, 实际用的串口)
+
+    写坏了会自动降速重试，最后一步还会先整片擦除 —— 见 BAUD_LADDER 的说明。
+    """
     if not firmware_ready(sandbox):
         reporter.error('还没编译过，build 目录里没有固件')
         reporter.hint('先点"一键编译烧录"，或者单独跑一次 .idf-sandbox/tools/build.py')
@@ -64,42 +88,75 @@ def run_flash(sandbox: Sandbox, reporter: Reporter, *, port: str = '', baud: int
 
     save_state({'port': port})
     env = sandbox.build_env()
-    speed = ['-b', str(baud)] if baud else []
+
+    # 用户自己指定了波特率就听他的，只试一次；否则按阶梯来
+    if baud:
+        attempts = [(baud, erase)]
+    else:
+        attempts = [(BAUD_LADDER[0], erase)]
+        for speed in BAUD_LADDER[1:]:
+            attempts.append((speed, erase))
+        # 最后一步：降速 + 整片擦除（把写坏的扇区一起清掉）
+        if not erase:
+            attempts.append((BAUD_LADDER[-1], True))
 
     reporter.line(f'  串口：{port}')
 
-    if erase:
-        reporter.info('整片擦除（NVS 里存的设置也会一起清掉）')
-        result = run_streamed(
-            sandbox.idf_command(['-p', port, *speed, 'erase-flash']), env,
-            sandbox.project, reporter)
-        if not result.ok:
-            reporter.error('擦除失败，串口是不是被别的程序占着？')
-            return result.code or 1, port
-        reporter.ok('擦除完成')
+    result = None
+    for index, (speed, do_erase) in enumerate(attempts):
+        if index:
+            reporter.line('')
+            reporter.warn(f'第 {index + 1} 次尝试：把速度降到 {speed}'
+                          + ('，并且先整片擦除' if do_erase else ''))
 
-    reporter.info('开始烧录，请稍等……')
-    result = run_streamed(
-        sandbox.idf_command(['-p', port, *speed, 'flash']), env, sandbox.project, reporter)
+        if do_erase:
+            reporter.info('整片擦除（NVS 里存的设置也会一起清掉）')
+            erased = run_streamed(
+                sandbox.idf_command(['-p', port, '-b', str(speed), 'erase-flash']),
+                env, sandbox.project, reporter)
+            if not erased.ok:
+                reporter.error('擦除失败，串口是不是被别的程序占着？')
+                return erased.code or 1, port
+            reporter.ok('擦除完成')
+
+        reporter.info(f'开始烧录（{speed} 波特率），请稍等……')
+        result = run_streamed(
+            sandbox.idf_command(['-p', port, '-b', str(speed), 'flash']),
+            env, sandbox.project, reporter)
+
+        if result.ok:
+            reporter.line('')
+            reporter.ok(f'烧录成功，用时 {result.seconds:.1f} 秒')
+            if index:
+                reporter.hint(f'（降到 {speed} 波特率才成功的 —— 这根线/这个转串口芯片'
+                              f'在这个速度下更稳，以后就记着它吧）')
+            reporter.hint('板子已经自动重启，串口马上就会打印启动日志')
+            return 0, port
+
+        if not looks_like_write_error(result.tail):
+            break                      # 不是写坏，重试没意义
+        if index + 1 < len(attempts):
+            reporter.error('数据没写对（esptool 回读校验不通过）')
 
     reporter.line('')
-    if result.ok:
-        reporter.ok(f'烧录成功，用时 {result.seconds:.1f} 秒')
-        reporter.hint('板子已经自动重启，串口马上就会打印启动日志')
-        return 0, port
-
-    reporter.error(f'烧录失败（esptool 退出码 {result.code}）')
+    reporter.error(f'烧录失败（esptool 退出码 {result.code if result else "?"}）')
     reporter.line('')
     reporter.line(reporter.c('  常见原因：', 'yellow'))
-    for hint in diagnose(result.tail):
+    for hint in diagnose(result.tail if result else []):
         reporter.hint(hint)
-    return result.code or 1, port
+    return (result.code if result else 1) or 1, port
 
 
 def diagnose(tail: list[str]) -> list[str]:
     text = '\n'.join(tail).lower()
     hints: list[str] = []
     rules = (
+        ('md5 of file does not match',
+         '写进去的数据回读对不上：脚本已经自动降速重试过了还是不行，'
+         '换一根**短一点的 USB 数据线**、插电脑**后面**的 USB 口（别用扩展坞/前面板），'
+         '板子单独供电再试'),
+        ('failed to write to target flash',
+         'Flash 写不进去：换 USB 线/口，或者板子供电不足（ESP32-S3 带 PSRAM 比较费电）'),
         ('failed to connect', '连不上芯片：按住板子上的 BOOT 键再点烧录，或者换根 USB 线/换个 USB 口'),
         ('no serial data received', '芯片没响应：确认板子型号是 ESP32-S3，且 BOOT 键的操作对'),
         ('access is denied', '串口被占用：关掉其它串口工具（Arduino IDE、串口助手、另一个监视器窗口）'),

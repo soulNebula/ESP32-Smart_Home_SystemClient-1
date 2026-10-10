@@ -1040,11 +1040,14 @@ def run_streamed(cmd: list[str], env: dict, cwd: Path, reporter: Reporter,
 # ---------------------------------------------------------------------------
 
 class SerialPortInfo:
-    def __init__(self, device: str, description: str, hwid: str = '', vid: int = 0):
+    def __init__(self, device: str, description: str, hwid: str = '', vid: int = 0,
+                 source: str = 'pyserial'):
         self.device = device
         self.description = description or ''
         self.hwid = hwid or ''
         self.vid = vid
+        # 'pyserial' 拿得到 VID/描述；'system' 是注册表/设备文件兜底，拿不到
+        self.source = source
 
     @property
     def friendly(self) -> str:
@@ -1055,14 +1058,27 @@ class SerialPortInfo:
         return self.device.startswith('/dev/')
 
     @property
+    def vid_known(self) -> bool:
+        """VID 是真的读到了，还是"根本读不到"？
+
+        这条很要紧：注册表兜底拿不到 VID，vid 字段只是默认的 0。
+        以前不区分这两种情况，结果把客户的 **CH343 开发板**标成
+        "虚拟串口（蓝牙/内置），一般不是开发板" —— 纯误导。
+        """
+        return self.source != 'system'
+
+    @property
     def is_virtual(self) -> bool:
         """看着不像"插上去的开发板"就当成虚拟口
 
         * Windows: 没有 USB VID 的（蓝牙虚拟串口之类）
         * Linux: /dev/ttyS* 是主板自带串口，开发板不会出现在那儿
+        * **信息不足时不乱下结论** —— 宁可不说，也别把开发板说成虚拟口
         """
         if self.is_linux_device:
             return self.device.startswith('/dev/ttyS')
+        if not self.vid_known:
+            return False
         return self.vid == 0
 
     @property
@@ -1075,6 +1091,9 @@ class SerialPortInfo:
             if self.device.startswith('/dev/ttyS'):
                 return '主板自带串口，一般不是开发板'
             return ''
+        if not self.vid_known:
+            # 拿不到 VID 就老实说拿不到，别硬猜
+            return '串口设备（读不到型号，可能是开发板）'
         if self.vid == 0x303A:
             return 'ESP32 原生 USB'
         if self.vid in KNOWN_USB_VIDS:
@@ -1101,6 +1120,9 @@ class SerialPortInfo:
             if self.device.startswith('/dev/ttyS'):
                 return 9
             return 3
+        if not self.vid_known:
+            # 信息不足：当普通 USB 串口看，别排到最后去
+            return 1
         if self.vid == 0x303A:
             return 0
         if self.vid in KNOWN_USB_VIDS:
@@ -1126,7 +1148,8 @@ def _pyserial_ports() -> list[SerialPortInfo]:
             if item.vid is not None:
                 vid = int(item.vid)
             ports.append(SerialPortInfo(item.device, item.description or '',
-                                        item.hwid or '', vid))
+                                        item.hwid or '', vid,
+                                        source='pyserial'))
     except Exception:
         return []
     return ports
@@ -1153,7 +1176,8 @@ def _system_ports() -> list[SerialPortInfo]:
                     except OSError:
                         break
                     index += 1
-                    found.append(SerialPortInfo(str(value), '串口设备', '', 0))
+                    found.append(SerialPortInfo(str(value), '串口设备', '', 0,
+                                                source='system'))
         except OSError:
             pass
     else:
@@ -1162,7 +1186,8 @@ def _system_ports() -> list[SerialPortInfo]:
         for pattern in ('/dev/ttyUSB*', '/dev/ttyACM*', '/dev/ttyS*',
                         '/dev/cu.usb*', '/dev/cu.SLAB*', '/dev/cu.wch*'):
             for path in sorted(_glob.glob(pattern)):
-                found.append(SerialPortInfo(path, os.path.basename(path), '', 0))
+                found.append(SerialPortInfo(path, os.path.basename(path), '', 0,
+                                             source='system'))
     return found
 
 
