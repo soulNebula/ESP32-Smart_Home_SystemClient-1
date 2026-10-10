@@ -471,12 +471,29 @@ python .idf-sandbox\start.py --project D:\我的另一个工程   :: 图形界�
 
 ### 拿这个沙箱去编别的 ESP-IDF 工程
 
-完全可以，而且**不用改对方一行代码**。实测过：
+**`.idf-sandbox` 是自包含的，可以单独拿出去用** —— 放桌面、放 D 盘都行，
+当一个**通用 ESP-IDF 编译器**使。实测：把沙箱单独挪到 `C:\sb-standalone\`，
+让它编桌面上的工程，编译成功 148 秒，固件一模一样。
 
-> 桌面上另一个独立工程 `C:\Users\Administrator\Desktop\2`（`project(smart_home_s3)`，
-> 同样带 esp-sr 语音组件），用本沙箱编译：
-> **`smart_home_s3.bin` 编译成功，用时 140.7 秒，app 分区剩余 58%**。
-> 增量编译 1.6 秒。
+沙箱默认认为"我旁边那个文件夹就是工程"。单独放出去以后旁边不是工程，
+它会**明确告诉你**，并给出三条路：
+
+| 方式 | 怎么做 | 记住吗 |
+|---|---|---|
+| 图形界面 | 顶上「工程」那一行点「浏览…」选目录 | ✅ 下次打开直接就是它 |
+| 命令行 | `start.py build --project D:\我的工程` | ✅ 同上 |
+| 放回去 | 把 `.idf-sandbox` 挪回工程目录（跟 `CMakeLists.txt` 同一层） | —— 不用记 |
+
+设置（端口 / 上次的工程 / 选过的系统）存在沙箱里的 `state.json`，
+所以**整个文件夹拷走，设置跟着走**。
+
+工程本身还是得在：沙箱只提供编译器，源码、`sdkconfig`、`managed_components/`
+都是工程的东西。
+
+### 编别人的工程：它是怎么做到的
+
+不用改对方一行代码。实测过一个独立工程 `C:\Users\Administrator\Desktop\2`
+（`project(smart_home_s3)`，同样带 esp-sr 语音组件）：
 
 它自己原来那套 `sandbox/` 用的是**指向 `E:\Espressif` 的符号链接**
 （`runtime/tools`、`runtime/python_env`），只在装过官方 ESP-IDF 的机器上能用，

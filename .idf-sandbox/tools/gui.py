@@ -406,6 +406,9 @@ class App:
             self.append(f'[注意] {path} 看着不太像 ESP-IDF 工程：', 'yellow')
             for item in problems:
                 self.append('       ' + item, 'yellow')
+            for item in self.sandbox.project_hint():
+                self.append('       ' + item if item.startswith(' ') else '   ' + item,
+                            'dim')
         else:
             self.append('', '')
             self.append(f'已切换工程：{self.sandbox.project_name()}   {path}', 'cyan')

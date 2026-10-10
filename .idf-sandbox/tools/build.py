@@ -189,6 +189,11 @@ def run_build(sandbox: Sandbox, reporter: Reporter, *, clean: bool = False,
         reporter.error(f'这个目录不像是能编译的 ESP-IDF 工程：{sandbox.project}')
         for item in problems:
             reporter.hint(item)
+        hint = sandbox.project_hint()
+        if hint:
+            reporter.line('')
+            for item in hint:
+                reporter.line(f'          {item}')
         return 2
 
     ensure_venv(sandbox, reporter)

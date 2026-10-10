@@ -362,6 +362,11 @@ class Sandbox:
         # 沙箱的上级目录，就是"这个沙箱服务的工程"
         self.home = self.root.parent
         self.project = Path(project).resolve() if project else self.home
+        self._state_path: Path | None = None      # state_file 第一次访问时定下来
+        # 命令行里明确指过工程就记下来 —— 沙箱被单独放到桌面/别的盘时，
+        # 用户用 --project 指一次，之后图形界面打开就默认是它了
+        if project:
+            remember_project(self, self.project)
 
     @property
     def is_foreign(self) -> bool:
@@ -440,9 +445,25 @@ class Sandbox:
 
     @property
     def state_file(self) -> Path:
+        """状态文件放哪（记住端口、上次用的工程、选过的平台）
+
+        **优先放沙箱里面** —— 绿色沙箱本来就该自包含：整体拷走，设置跟着走。
+        而且用户目录不一定写得进去：受限环境、公司电脑、漫游配置都可能拒绝，
+        以前写不进去就静默失败，"记住端口"这种功能悄悄失灵。
+        沙箱写不进去（只读盘、U 盘写保护）才退回用户目录。
+        """
+        if self._state_path is not None:
+            return self._state_path
+        candidates = [self.root / 'state.json']
         base = (os.environ.get('LOCALAPPDATA') or os.environ.get('XDG_STATE_HOME')
                 or os.environ.get('TEMP') or os.path.expanduser('~'))
-        return Path(base) / 'esp32-smarthome' / 'state.json'
+        candidates.append(Path(base) / 'esp32-smarthome' / 'state.json')
+        for path in candidates:
+            if _writable(path):
+                self._state_path = path
+                return path
+        self._state_path = candidates[0]          # 都不行，就用默认的，读写都会失败但不会崩
+        return self._state_path
 
     @property
     def log_dir(self) -> Path:
@@ -593,6 +614,30 @@ class Sandbox:
         except OSError:
             pass
         return self.project.name
+
+    def project_hint(self) -> list[str]:
+        """工程目录不对时，告诉用户"那该怎么办"
+
+        最常见的场景：**沙箱被单独拿出来了**（放桌面、放 D 盘），
+        它旁边根本没有工程 —— 这时候光说"没有 CMakeLists.txt"没用，
+        得告诉他可以 `--project` 指一个，或者在图形界面上点「浏览…」。
+        """
+        if not self.project_problems():
+            return []
+        if self.is_foreign:
+            return [
+                '确认路径选对了没 —— 要选到**有 CMakeLists.txt 的那一层**，',
+                '不是它上面的文件夹，也不是里面的子目录（比如 main/）。',
+            ]
+        return [
+            f'沙箱现在是单独放的：{self.root.parent} 旁边没有工程。',
+            '两种用法，挑一个：',
+            '  1) 把 .idf-sandbox 放回工程目录里（跟 CMakeLists.txt 同一层）',
+            '  2) 明确告诉它编哪个工程：',
+            f'       python {self.root / "start.py"} build --project D:\\我的工程',
+            '     或者在图形界面顶上「工程」那一行点「浏览…」选目录，',
+            '     选过一次就会记住，下次打开直接就是它。',
+        ]
 
     def needs_component_manager(self) -> bool:
         """这个工程是不是非得开组件管理器才能编
@@ -1154,7 +1199,43 @@ def load_state(sandbox: Sandbox | None = None) -> dict:
         return {}
 
 
+def _writable(path: Path) -> bool:
+    """这个路径写得进去吗（顺带把父目录建出来）
+
+    不能只看 os.access —— 它不反映真实的 ACL 效果。实际写一个探针文件最准。
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            with open(path, 'a', encoding='utf-8'):
+                return True
+            return True
+        probe = path.parent / (path.name + '.probe')
+        probe.write_text('', encoding='utf-8')
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+def remember_project(sandbox: Sandbox, path: Path) -> None:
+    """记住这次用的工程
+
+    命令行里 `--project` 指过一次，图形界面下次打开就默认用它 ——
+    把沙箱单独放桌面用的时候，这一条特别重要：不然每次都要重新选。
+    """
+    try:
+        state = load_state(sandbox)
+        text = str(path)
+        recent = [text] + [p for p in state.get('recent_projects', []) if p != text]
+        save_state({'last_project': text, 'recent_projects': recent[:8]}, sandbox)
+    except Exception:
+        pass          # 记不住不影响干活
+
+
 def save_state(data: dict, sandbox: Sandbox | None = None) -> None:
+
+
+
     sb = sandbox or Sandbox()
     try:
         sb.state_file.parent.mkdir(parents=True, exist_ok=True)

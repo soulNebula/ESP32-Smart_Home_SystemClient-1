@@ -39,6 +39,7 @@ logs/
 .idf-sandbox/drivers/
 .idf-sandbox/logs/
 .idf-sandbox/tmp/
+.idf-sandbox/state.json
 .idf-sandbox/download/
 .idf-sandbox/download-linux/
 
