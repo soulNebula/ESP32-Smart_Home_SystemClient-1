@@ -947,6 +947,9 @@ def prune(sandbox: Sandbox, reporter: Reporter, deep: bool = False,
 
     ``deep=True`` 时连**当前平台**的工具链也删掉 —— 下次点「配置沙箱环境」
     能重新下回来（约 400 MB，几分钟）。这一条只在你确定暂时不需要编译时用。
+
+    带上 ``--deep`` 之后整个工程就回到"只有图纸"的状态（几十 MB），
+    适合搬到别的盘、发给别人、或者长期不用时腾地方。
     """
     other = 'linux' if sandbox.host == 'windows' else 'windows'
     plan: list[tuple[str, Path]] = [
@@ -963,7 +966,11 @@ def prune(sandbox: Sandbox, reporter: Reporter, deep: bool = False,
         plan.append((f'当前平台的工具链（{sandbox.host}，约 1.5 GB）',
                      sandbox.idf_tools_dir))
         plan.append(('ESP-IDF 源码（约 355 MB）', sandbox.idf_dir))
-        plan.append(('工程组件依赖 managed_components/', sandbox.project / 'managed_components'))
+        plan.append(('工程组件依赖 managed_components/',
+                     sandbox.project / 'managed_components'))
+        # 便携 Python 现在也是能重新下载的（见 download_python），归到 --deep 里
+        plan.append(('便携 Python（约 50 MB，含 tkinter）', sandbox.python_dir))
+        plan.append(('虚拟环境 penv/（会自动重建）', sandbox.venv_dir))
 
     reporter.banner('清理可以重新生成的东西')
     if not really:
