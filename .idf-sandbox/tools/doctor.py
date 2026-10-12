@@ -77,7 +77,12 @@ def main(argv: list[str] | None = None) -> int:
         item(OK if exists else BAD, '沙箱目录', str(sandbox.root))
         ascii_ok = is_ascii(str(sandbox.project)) and is_ascii(str(sandbox.root))
         item(OK if ascii_ok else WARN, '路径是否纯英文',
-             '是' if ascii_ok else '否（可能影响交叉编译器，建议挪到 D:\\esp32_smart_home）')
+             '是' if ascii_ok else '否（可能影响交叉编译器，建议改成纯英文目录名）')
+        # 空格是硬伤：xtensa 的 gcc 会因为 Windows 8.3 短名对不上直接 fatal error，
+        # 而它的报错里一个"空格"字样都没有。这里单独拎出来说。
+        space_issues = sandbox.path_problems()
+        item(OK if not space_issues else BAD, '路径是否含空格',
+             '否' if not space_issues else f'有 —— {space_issues[0]}')
         if exists:
             reporter.hint(f'沙箱体积 {human_size(dir_size(sandbox.root))}'
                           f'（整个文件夹拷走就是完整环境）')

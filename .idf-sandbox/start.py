@@ -401,21 +401,19 @@ def relaunch_with_sandbox(plat, task, args, graphical):
         return False                      # 已经就是它，别再套一层
 
     argv = [target, os.path.abspath(__file__), '--os', plat, task] + list(args)
+
+    # 用 subprocess 拉起，**不用 os.execv** —— 路径带空格时 os.execv 是坏的：
+    # Windows 的 CRT 会把 "E:\ESP 32 project\...\python.exe" 在空格处劈开，
+    # 报出来是 "E:\ESP: can't open file ...\32"，完全看不出问题在哪（实测踩过）。
+    # subprocess 会正确给每个参数加引号，带空格也稳。
+    # 代价是多一个进程，但父进程拉起来就退出，不影响什么。
     try:
+        import subprocess
         try:
             sys.stdout.flush()
             sys.stderr.flush()
         except Exception:
             pass
-        os.execv(target, argv)
-        return True                       # 正常情况走不到这儿
-    except Exception:
-        pass
-
-    # os.execv 偶尔不灵。退回子进程方式 —— 但**不能 call() 等它**：
-    # 图形界面是要一直开着的，父进程等下去就等于"终端关了界面也跟着死"。
-    try:
-        import subprocess
         flags = 0
         if graphical and os.name == 'nt':
             flags = getattr(subprocess, 'DETACHED_PROCESS', 0x00000008)

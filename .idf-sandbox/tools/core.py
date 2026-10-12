@@ -639,12 +639,46 @@ class Sandbox:
             '     选过一次就会记住，下次打开直接就是它。',
         ]
 
+    def path_problems(self) -> list[str]:
+        """路径里有会让交叉编译器翻车的东西
+
+        实测（真踩过）：路径带**空格**时，xtensa 的 gcc 会在启动时报
+
+            cc1.exe: fatal error: Both 'XTENSA_GNU_CONFIG' and "-dynconfig="
+            specified but pointed different files:
+            'E:\\ESP32P~1\\ESP32_~1\\IDF-SA~1\\...'
+
+        原因是 Windows 的 8.3 短名：带空格的目录会被转成 ``ESP32P~1`` 这种短名，
+        一处用短名、一处用长名，gcc 一比对发现不一致就直接 fatal error。
+        报错信息里一个"空格"字样都没有，用户根本猜不到是这个原因
+        —— 所以这里提前拦住，并且把话说明白。
+        """
+        problems = []
+        for label, path in (('工程', self.project), ('沙箱', self.root)):
+            text = str(path)
+            if ' ' in text:
+                problems.append(f'{label}路径里有空格：{text}')
+        return problems
+
+    def path_hint(self) -> list[str]:
+        """路径有问题时给"那改成什么"的建议"""
+        if not self.path_problems():
+            return []
+        return [
+            '交叉编译器（xtensa gcc）处理不了带空格的路径 —— 这是它的限制，不是脚本的问题。',
+            '',
+            '改法：把带空格的那一层文件夹改名，空格换成下划线或直接去掉。',
+            '  例如： E:\\ESP 32 project\\esp32_smart_home',
+            '  改成： E:\\ESP32_project\\esp32_smart_home',
+            '',
+            '改名不会影响任何东西：沙箱和工程都会自己适配新路径，不用重装、不用重编环境。',
+        ]
+
     def needs_component_manager(self) -> bool:
         """这个工程是不是非得开组件管理器才能编
 
         情况：工程里写了 idf_component.yml 声明依赖，但 managed_components/
-        里一个都没有 —— 说明依赖还得联网下。
-        """
+        里一个都没有 —— 说明依赖还得联网下。        """
         if self.managed_components:
             return False
         for yml in (self.project / 'main' / 'idf_component.yml',

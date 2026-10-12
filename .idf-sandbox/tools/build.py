@@ -175,6 +175,18 @@ def run_build(sandbox: Sandbox, reporter: Reporter, *, clean: bool = False,
               verbose: bool = False, jobs: int = 0, task: str = 'build',
               extra: tuple[str, ...] = ()) -> int:
     """编译一次，返回退出码（0 = 成功）"""
+    # 先拦路径问题。这个必须排在"沙箱完不完整"前面 —— 路径不对的话，
+    # 后面报的错（XTENSA_GNU_CONFIG 天书）完全看不出是这个原因。
+    path_issues = sandbox.path_problems()
+    if path_issues:
+        reporter.error('路径里有空格，交叉编译器处理不了：')
+        for item in path_issues:
+            reporter.line(f'           {item}')
+        reporter.line('')
+        for line in sandbox.path_hint():
+            reporter.line(f'          {line}' if line else '')
+        return 2
+
     missing = sandbox.check_essentials()
     if missing:
         reporter.error('沙箱不完整，缺少下面这些文件：')
