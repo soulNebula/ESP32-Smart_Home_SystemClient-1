@@ -8,3 +8,19 @@
 # patch 也不要被改行尾
 *.patch text eol=lf
 *.diff  text eol=lf
+
+# 二进制文件：明确告诉 git「这是二进制」，别去转换行尾、别试图做差异对比
+# （不管的话，某些配置下 git 会把它们当文本处理，把文件弄坏）
+*.SLDPRT binary
+*.SLDASM binary
+*.STL    binary
+*.apk    binary
+*.jar    binary
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.pdf    binary
+*.bin    binary
+*.elf    binary
